@@ -76,6 +76,7 @@ static struct platform_driver vfio_platform_driver = {
 	.driver	= {
 		.name	= "vfio-platform",
 	},
+	.no_kernel_api_dma = true,
 };
 
 module_platform_driver(vfio_platform_driver);

@@ -95,6 +95,7 @@ static struct amba_driver vfio_amba_driver = {
 		.name = "vfio-amba",
 		.owner = THIS_MODULE,
 	},
+	.no_kernel_api_dma = true,
 };
 
 module_amba_driver(vfio_amba_driver);

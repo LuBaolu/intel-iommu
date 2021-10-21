@@ -588,6 +588,7 @@ static struct fsl_mc_driver vfio_fsl_mc_driver = {
 		.name	= "vfio-fsl-mc",
 		.owner	= THIS_MODULE,
 	},
+	.no_kernel_api_dma = true,
 };
 
 static int __init vfio_fsl_mc_driver_init(void)
