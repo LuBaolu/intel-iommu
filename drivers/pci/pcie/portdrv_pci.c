@@ -202,6 +202,8 @@ static struct pci_driver pcie_portdriver = {
 
 	.err_handler	= &pcie_portdrv_err_handler,
 
+	.no_kernel_api_dma = true,
+
 	.driver.pm	= PCIE_PORTDRV_PM_OPS,
 };
 
