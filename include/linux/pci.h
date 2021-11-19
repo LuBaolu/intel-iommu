@@ -882,6 +882,10 @@ struct module;
  *              created once it is bound to the driver.
  * @driver:	Driver model structure.
  * @dynids:	List of dynamically added device IDs.
+ * @no_kernel_api_dma: Device driver doesn't use kernel DMA API for DMA.
+ *		Drivers which don't require DMA or want to manually claim the
+ *		owner type (e.g. userspace driver frameworks) could set this
+ *		flag.
  */
 struct pci_driver {
 	struct list_head	node;
@@ -900,6 +904,7 @@ struct pci_driver {
 	const struct attribute_group **dev_groups;
 	struct device_driver	driver;
 	struct pci_dynids	dynids;
+	bool no_kernel_api_dma;
 };
 
 static inline struct pci_driver *to_pci_driver(struct device_driver *drv)
