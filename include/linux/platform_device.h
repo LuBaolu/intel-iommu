@@ -210,6 +210,7 @@ struct platform_driver {
 	struct device_driver driver;
 	const struct platform_device_id *id_table;
 	bool prevent_deferred_probe;
+	bool no_kernel_api_dma;
 };
 
 #define to_platform_driver(drv)	(container_of((drv), struct platform_driver, \
