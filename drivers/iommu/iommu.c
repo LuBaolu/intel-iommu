@@ -47,6 +47,7 @@ struct iommu_group {
 	struct iommu_domain *domain;
 	struct list_head entry;
 	unsigned int owner_cnt;
+	unsigned int attach_cnt;
 	void *owner;
 };
 
@@ -1921,27 +1922,59 @@ static int __iommu_attach_device(struct iommu_domain *domain,
 	return ret;
 }
 
+/**
+ * iommu_attach_device() - attach external or UNMANAGED domain to device
+ * @domain: the domain about to attach
+ * @dev: the device about to be attached
+ *
+ * For devices belonging to the same group, iommu_device_use_dma_api() and
+ * iommu_attach_device() are exclusive. Therefore, when drivers decide to
+ * use iommu_attach_domain(), they cannot call iommu_device_use_dma_api()
+ * at the same time.
+ */
 int iommu_attach_device(struct iommu_domain *domain, struct device *dev)
 {
 	struct iommu_group *group;
-	int ret;
+	int ret = 0;
+
+	if (domain->type != IOMMU_DOMAIN_UNMANAGED)
+		return -EINVAL;
 
 	group = iommu_group_get(dev);
 	if (!group)
 		return -ENODEV;
 
-	/*
-	 * Lock the group to make sure the device-count doesn't
-	 * change while we are attaching
-	 */
 	mutex_lock(&group->mutex);
-	ret = -EINVAL;
-	if (iommu_group_device_count(group) != 1)
-		goto out_unlock;
+	if (group->owner_cnt) {
+		/*
+		 * Group has been used for kernel-api dma or claimed explicitly
+		 * for exclusive occupation. For backward compatibility, device
+		 * in a singleton group is allowed to ignore setting the
+		 * drv.no_kernel_api_dma field.
+		 */
+		if ((group->domain == group->default_domain &&
+		     iommu_group_device_count(group) != 1) ||
+		    group->owner) {
+			ret = -EBUSY;
+			goto unlock_out;
+		}
+	}
 
-	ret = __iommu_attach_group(domain, group);
+	if (!group->attach_cnt) {
+		ret = __iommu_attach_group(domain, group);
+		if (ret)
+			goto unlock_out;
+	} else {
+		if (group->domain != domain) {
+			ret = -EPERM;
+			goto unlock_out;
+		}
+	}
 
-out_unlock:
+	group->owner_cnt++;
+	group->attach_cnt++;
+
+unlock_out:
 	mutex_unlock(&group->mutex);
 	iommu_group_put(group);
 
@@ -2182,23 +2215,35 @@ static void __iommu_detach_device(struct iommu_domain *domain,
 	trace_detach_device_from_domain(dev);
 }
 
+/**
+ * iommu_detach_device() - detach external or UNMANAGED domain from device
+ * @domain: the domain about to detach
+ * @dev: the device about to be detached
+ *
+ * Paired with iommu_attach_device(), it detaches the domain from the device.
+ */
 void iommu_detach_device(struct iommu_domain *domain, struct device *dev)
 {
 	struct iommu_group *group;
 
+	if (WARN_ON(domain->type != IOMMU_DOMAIN_UNMANAGED))
+		return;
+
 	group = iommu_group_get(dev);
-	if (!group)
+	if (WARN_ON(!group))
 		return;
 
 	mutex_lock(&group->mutex);
-	if (iommu_group_device_count(group) != 1) {
-		WARN_ON(1);
-		goto out_unlock;
-	}
+	if (WARN_ON(!group->attach_cnt || !group->owner_cnt ||
+		    group->domain != domain))
+		goto unlock_out;
 
-	__iommu_detach_group(domain, group);
+	group->attach_cnt--;
+	group->owner_cnt--;
+	if (!group->attach_cnt)
+		__iommu_detach_group(domain, group);
 
-out_unlock:
+unlock_out:
 	mutex_unlock(&group->mutex);
 	iommu_group_put(group);
 }
