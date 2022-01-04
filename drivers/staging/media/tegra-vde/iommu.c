@@ -91,7 +91,7 @@ int tegra_vde_iommu_init(struct tegra_vde *vde)
 	order = __ffs(vde->domain->pgsize_bitmap);
 	init_iova_domain(&vde->iova, 1UL << order, 0);
 
-	err = iommu_attach_group(vde->domain, vde->group);
+	err = iommu_attach_device(vde->domain, dev);
 	if (err)
 		goto put_iova;
 
@@ -129,7 +129,7 @@ int tegra_vde_iommu_init(struct tegra_vde *vde)
 unreserve_iova:
 	__free_iova(&vde->iova, vde->iova_resv_static_addresses);
 detach_group:
-	iommu_detach_group(vde->domain, vde->group);
+	iommu_detach_device(vde->domain, dev);
 put_iova:
 	put_iova_domain(&vde->iova);
 	iova_cache_put();
@@ -146,7 +146,7 @@ void tegra_vde_iommu_deinit(struct tegra_vde *vde)
 	if (vde->domain) {
 		__free_iova(&vde->iova, vde->iova_resv_last_page);
 		__free_iova(&vde->iova, vde->iova_resv_static_addresses);
-		iommu_detach_group(vde->domain, vde->group);
+		iommu_detach_device(vde->domain, vde->miscdev.parent);
 		put_iova_domain(&vde->iova);
 		iova_cache_put();
 		iommu_domain_free(vde->domain);
