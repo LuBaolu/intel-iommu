@@ -265,7 +265,7 @@ static struct iommu_domain *host1x_iommu_attach(struct host1x *host)
 			goto put_cache;
 		}
 
-		err = iommu_attach_group(host->domain, host->group);
+		err = iommu_attach_device(host->domain, host->dev);
 		if (err) {
 			if (err == -ENODEV)
 				err = 0;
@@ -335,7 +335,7 @@ static void host1x_iommu_exit(struct host1x *host)
 {
 	if (host->domain) {
 		put_iova_domain(&host->iova);
-		iommu_detach_group(host->domain, host->group);
+		iommu_detach_device(host->domain, host->dev);
 
 		iommu_domain_free(host->domain);
 		host->domain = NULL;
