@@ -2213,7 +2213,8 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 			goto out_domain;
 	}
 
-	ret = iommu_attach_group(domain->domain, group->iommu_group);
+	ret = iommu_group_replace_domain(group->iommu_group, NULL,
+					 domain->domain);
 	if (ret)
 		goto out_domain;
 
@@ -2280,19 +2281,14 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 	list_for_each_entry(d, &iommu->domain_list, next) {
 		if (d->domain->ops == domain->domain->ops &&
 		    d->prot == domain->prot) {
-			iommu_detach_group(domain->domain, group->iommu_group);
-			if (!iommu_attach_group(d->domain,
-						group->iommu_group)) {
+			if (!iommu_group_replace_domain(group->iommu_group,
+							domain->domain,
+							d->domain)) {
 				list_add(&group->next, &d->group_list);
 				iommu_domain_free(domain->domain);
 				kfree(domain);
 				goto done;
 			}
-
-			ret = iommu_attach_group(domain->domain,
-						 group->iommu_group);
-			if (ret)
-				goto out_domain;
 		}
 	}
 
@@ -2327,7 +2323,7 @@ done:
 	return 0;
 
 out_detach:
-	iommu_detach_group(domain->domain, group->iommu_group);
+	iommu_group_replace_domain(group->iommu_group, domain->domain, NULL);
 out_domain:
 	iommu_domain_free(domain->domain);
 	vfio_iommu_iova_free(&iova_copy);
@@ -2488,7 +2484,8 @@ static void vfio_iommu_type1_detach_group(void *iommu_data,
 		if (!group)
 			continue;
 
-		iommu_detach_group(domain->domain, group->iommu_group);
+		iommu_group_replace_domain(group->iommu_group,
+					   domain->domain, NULL);
 		update_dirty_scope = !group->pinned_page_dirty_scope;
 		list_del(&group->next);
 		kfree(group);
@@ -2577,7 +2574,8 @@ static void vfio_release_domain(struct vfio_domain *domain)
 
 	list_for_each_entry_safe(group, group_tmp,
 				 &domain->group_list, next) {
-		iommu_detach_group(domain->domain, group->iommu_group);
+		iommu_group_replace_domain(group->iommu_group,
+					   domain->domain, NULL);
 		list_del(&group->next);
 		kfree(group);
 	}
