@@ -133,7 +133,7 @@ static void free_device_state(struct device_state *dev_state)
 	if (WARN_ON(!group))
 		return;
 
-	iommu_detach_group(dev_state->domain, group);
+	iommu_detach_device(dev_state->domain, &dev_state->pdev->dev);
 
 	iommu_group_put(group);
 
@@ -791,7 +791,7 @@ int amd_iommu_init_device(struct pci_dev *pdev, int pasids)
 		goto out_free_domain;
 	}
 
-	ret = iommu_attach_group(dev_state->domain, group);
+	ret = iommu_attach_device(dev_state->domain, &pdev->dev);
 	if (ret != 0)
 		goto out_drop_group;
 
