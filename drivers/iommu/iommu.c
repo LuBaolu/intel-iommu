@@ -2308,18 +2308,6 @@ static int __iommu_attach_group(struct iommu_domain *domain,
 	return ret;
 }
 
-int iommu_attach_group(struct iommu_domain *domain, struct iommu_group *group)
-{
-	int ret;
-
-	mutex_lock(&group->mutex);
-	ret = __iommu_attach_group(domain, group);
-	mutex_unlock(&group->mutex);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(iommu_attach_group);
-
 static int iommu_group_do_detach_device(struct device *dev, void *data)
 {
 	struct iommu_domain *domain = data;
@@ -2356,14 +2344,6 @@ static void __iommu_detach_group(struct iommu_domain *domain,
 	else
 		group->domain = group->default_domain;
 }
-
-void iommu_detach_group(struct iommu_domain *domain, struct iommu_group *group)
-{
-	mutex_lock(&group->mutex);
-	__iommu_detach_group(domain, group);
-	mutex_unlock(&group->mutex);
-}
-EXPORT_SYMBOL_GPL(iommu_detach_group);
 
 phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 {

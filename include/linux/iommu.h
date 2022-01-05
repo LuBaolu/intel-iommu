@@ -457,10 +457,6 @@ iommu_alloc_resv_region(phys_addr_t start, size_t length, int prot,
 extern int iommu_get_group_resv_regions(struct iommu_group *group,
 					struct list_head *head);
 
-extern int iommu_attach_group(struct iommu_domain *domain,
-			      struct iommu_group *group);
-extern void iommu_detach_group(struct iommu_domain *domain,
-			       struct iommu_group *group);
 extern struct iommu_group *iommu_group_alloc(void);
 extern void *iommu_group_get_iommudata(struct iommu_group *group);
 extern void iommu_group_set_iommudata(struct iommu_group *group,
@@ -816,17 +812,6 @@ static inline void iommu_set_default_translated(bool cmd_line)
 static inline bool iommu_default_passthrough(void)
 {
 	return true;
-}
-
-static inline int iommu_attach_group(struct iommu_domain *domain,
-				     struct iommu_group *group)
-{
-	return -ENODEV;
-}
-
-static inline void iommu_detach_group(struct iommu_domain *domain,
-				      struct iommu_group *group)
-{
 }
 
 static inline struct iommu_group *iommu_group_alloc(void)
