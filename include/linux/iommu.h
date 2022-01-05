@@ -677,6 +677,9 @@ void iommu_device_unuse_dma_api(struct device *dev);
 int iommu_group_set_dma_owner(struct iommu_group *group, void *owner);
 void iommu_group_release_dma_owner(struct iommu_group *group);
 bool iommu_group_dma_owner_claimed(struct iommu_group *group);
+int iommu_group_replace_domain(struct iommu_group *group,
+			       struct iommu_domain *old,
+			       struct iommu_domain *new);
 
 #else /* CONFIG_IOMMU_API */
 
@@ -1089,6 +1092,13 @@ static inline void iommu_group_release_dma_owner(struct iommu_group *group)
 static inline bool iommu_group_dma_owner_claimed(struct iommu_group *group)
 {
 	return false;
+}
+
+static inline int
+iommu_group_replace_domain(struct iommu_group *group, struct iommu_domain *old,
+			   struct iommu_domain *new)
+{
+	return -ENODEV;
 }
 #endif /* CONFIG_IOMMU_API */
 

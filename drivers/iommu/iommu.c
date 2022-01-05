@@ -3431,3 +3431,40 @@ bool iommu_group_dma_owner_claimed(struct iommu_group *group)
 	return user;
 }
 EXPORT_SYMBOL_GPL(iommu_group_dma_owner_claimed);
+
+/**
+ * iommu_group_replace_domain() - Replace group's domain
+ * @group: The group.
+ * @old: The previous attached domain. NULL for none.
+ * @new: The new domain about to be attached.
+ *
+ * This is to support backward compatibility for vfio which manages the dma
+ * ownership in iommu_group level.
+ */
+int iommu_group_replace_domain(struct iommu_group *group,
+			       struct iommu_domain *old,
+			       struct iommu_domain *new)
+{
+	int ret = 0;
+
+	mutex_lock(&group->mutex);
+	if (!group->owner || group->domain != old) {
+		ret = -EPERM;
+		goto unlock_out;
+	}
+
+	if (old)
+		__iommu_detach_group(old, group);
+
+	if (new) {
+		ret = __iommu_attach_group(new, group);
+		if (ret && old)
+			__iommu_attach_group(old, group);
+	}
+
+unlock_out:
+	mutex_unlock(&group->mutex);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(iommu_group_replace_domain);
