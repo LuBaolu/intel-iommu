@@ -131,8 +131,6 @@ static struct intel_iommu **g_iommus;
 
 static void __init check_tylersburg_isoch(void);
 static int rwbf_quirk;
-static inline struct device_domain_info *
-dmar_search_domain_by_dev_info(int segment, int bus, int devfn);
 
 /*
  * set to 1 to panic kernel if can't successfully enable VT-d
@@ -318,30 +316,34 @@ int intel_iommu_gfx_mapped;
 EXPORT_SYMBOL_GPL(intel_iommu_gfx_mapped);
 
 DEFINE_SPINLOCK(device_domain_lock);
-static LIST_HEAD(device_domain_list);
+static DEFINE_XARRAY_ALLOC(device_domain_array);
+
+/* Convert device source ID into the index of device_domain_array. */
+static inline unsigned long devi_idx(unsigned long seg, u8 bus, u8 devfn)
+{
+	return (seg << 16) | PCI_DEVID(bus, devfn);
+}
 
 /*
- * Iterate over elements in device_domain_list and call the specified
+ * Iterate over elements in device_domain_array and call the specified
  * callback @fn against each element.
  */
 int for_each_device_domain(int (*fn)(struct device_domain_info *info,
 				     void *data), void *data)
 {
-	int ret = 0;
-	unsigned long flags;
 	struct device_domain_info *info;
+	unsigned long index;
+	int ret = 0;
 
-	spin_lock_irqsave(&device_domain_lock, flags);
-	list_for_each_entry(info, &device_domain_list, global) {
+	rcu_read_lock();
+	xa_for_each(&device_domain_array, index, info) {
 		ret = fn(info, data);
-		if (ret) {
-			spin_unlock_irqrestore(&device_domain_lock, flags);
-			return ret;
-		}
+		if (ret)
+			break;
 	}
-	spin_unlock_irqrestore(&device_domain_lock, flags);
+	rcu_read_unlock();
 
-	return 0;
+	return ret;
 }
 
 const struct iommu_ops intel_iommu_ops;
@@ -903,7 +905,8 @@ static void pgtable_walk(struct intel_iommu *iommu, unsigned long pfn, u8 bus, u
 	struct dmar_domain *domain;
 	int offset, level;
 
-	info = dmar_search_domain_by_dev_info(iommu->segment, bus, devfn);
+	info = xa_load(&device_domain_array,
+		       devi_idx(iommu->segment, bus, devfn));
 	if (!info || !info->domain) {
 		pr_info("device [%02x:%02x.%d] not probed\n",
 			bus, PCI_SLOT(devfn), PCI_FUNC(devfn));
@@ -1742,14 +1745,14 @@ static int iommu_init_domains(struct intel_iommu *iommu)
 
 static void disable_dmar_iommu(struct intel_iommu *iommu)
 {
-	struct device_domain_info *info, *tmp;
-	unsigned long flags;
+	struct device_domain_info *info;
+	unsigned long index;
 
 	if (!iommu->domain_ids)
 		return;
 
-	spin_lock_irqsave(&device_domain_lock, flags);
-	list_for_each_entry_safe(info, tmp, &device_domain_list, global) {
+	rcu_read_lock();
+	xa_for_each(&device_domain_array, index, info) {
 		if (info->iommu != iommu)
 			continue;
 
@@ -1758,7 +1761,7 @@ static void disable_dmar_iommu(struct intel_iommu *iommu)
 
 		__dmar_remove_one_dev_info(info);
 	}
-	spin_unlock_irqrestore(&device_domain_lock, flags);
+	rcu_read_unlock();
 
 	if (iommu->gcmd & DMA_GCMD_TE)
 		iommu_disable_translation(iommu);
@@ -2388,19 +2391,6 @@ static void domain_remove_dev_info(struct dmar_domain *domain)
 	list_for_each_entry_safe(info, tmp, &domain->devices, link)
 		__dmar_remove_one_dev_info(info);
 	spin_unlock_irqrestore(&device_domain_lock, flags);
-}
-
-static inline struct device_domain_info *
-dmar_search_domain_by_dev_info(int segment, int bus, int devfn)
-{
-	struct device_domain_info *info;
-
-	list_for_each_entry(info, &device_domain_list, global)
-		if (info->segment == segment && info->bus == bus &&
-		    info->devfn == devfn)
-			return info;
-
-	return NULL;
 }
 
 static int domain_setup_first_level(struct intel_iommu *iommu,
@@ -4516,8 +4506,8 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 	struct pci_dev *pdev = dev_is_pci(dev) ? to_pci_dev(dev) : NULL;
 	struct device_domain_info *info;
 	struct intel_iommu *iommu;
-	unsigned long flags;
 	u8 bus, devfn;
+	void *curr;
 
 	iommu = device_to_iommu(dev, &bus, &devfn);
 	if (!iommu)
@@ -4559,10 +4549,15 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 		}
 	}
 
-	spin_lock_irqsave(&device_domain_lock, flags);
-	list_add(&info->global, &device_domain_list);
+	curr = xa_store(&device_domain_array,
+			devi_idx(info->segment, info->bus, info->devfn),
+			info, GFP_KERNEL);
+	if (xa_err(curr) || WARN_ON(curr)) {
+		kfree(info);
+		return ERR_PTR(-ENOSPC);
+	}
+
 	dev_iommu_priv_set(dev, info);
-	spin_unlock_irqrestore(&device_domain_lock, flags);
 
 	return &iommu->iommu;
 }
@@ -4576,7 +4571,8 @@ static void intel_iommu_release_device(struct device *dev)
 
 	spin_lock_irqsave(&device_domain_lock, flags);
 	dev_iommu_priv_set(dev, NULL);
-	list_del(&info->global);
+	xa_erase(&device_domain_array,
+		 devi_idx(info->segment, info->bus, info->devfn));
 	spin_unlock_irqrestore(&device_domain_lock, flags);
 
 	kfree(info);
