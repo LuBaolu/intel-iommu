@@ -2812,6 +2812,7 @@ static int arm_smmu_dev_enable_feature(struct device *dev,
 		master->iopf_enabled = true;
 		return 0;
 	case IOMMU_DEV_FEAT_SVA:
+		dev->iommu->pasid_bits = master->ssid_bits;
 		return arm_smmu_master_enable_sva(master);
 	default:
 		return -EINVAL;
