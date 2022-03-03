@@ -2858,6 +2858,12 @@ static struct iommu_ops arm_smmu_ops = {
 	.page_response		= arm_smmu_page_response,
 	.pgsize_bitmap		= -1UL, /* Restricted during device attach */
 	.owner			= THIS_MODULE,
+#ifdef CONFIG_ARM_SMMU_V3_SVA
+	.sva_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev_pasid		= arm_smmu_sva_attach_dev_pasid,
+		.block_dev_pasid	= arm_smmu_sva_detach_dev_pasid,
+	},
+#endif
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev		= arm_smmu_attach_dev,
 		.map_pages		= arm_smmu_map_pages,
