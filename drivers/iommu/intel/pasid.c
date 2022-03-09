@@ -625,7 +625,7 @@ int intel_pasid_setup_first_level(struct intel_iommu *iommu,
 		}
 	}
 
-	if (flags & PASID_FLAG_PAGE_SNOOP)
+	if ((flags & PASID_FLAG_PAGE_SNOOP) && ecap_sc_support(iommu->ecap))
 		pasid_set_pgsnp(pte);
 
 	pasid_set_domain_id(pte, did);
