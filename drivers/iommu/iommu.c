@@ -48,6 +48,7 @@ struct iommu_group {
 	struct list_head entry;
 	unsigned int owner_cnt;
 	void *owner;
+	bool singleton_lockdown;
 };
 
 struct group_device {
@@ -968,15 +969,16 @@ void iommu_group_remove_device(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(iommu_group_remove_device);
 
-static int iommu_group_device_count(struct iommu_group *group)
+/* Callers should hold the group->mutex. */
+static bool iommu_group_singleton_lockdown(struct iommu_group *group)
 {
-	struct group_device *entry;
-	int ret = 0;
+	if (group->owner_cnt != 1 ||
+	    group->domain != group->default_domain ||
+	    group->owner)
+		return false;
+	group->singleton_lockdown = true;
 
-	list_for_each_entry(entry, &group->devices, list)
-		ret++;
-
-	return ret;
+	return true;
 }
 
 static int __iommu_group_for_each_dev(struct iommu_group *group, void *data,
@@ -1936,7 +1938,7 @@ int iommu_attach_device(struct iommu_domain *domain, struct device *dev)
 	 */
 	mutex_lock(&group->mutex);
 	ret = -EINVAL;
-	if (iommu_group_device_count(group) != 1)
+	if (!iommu_group_singleton_lockdown(group))
 		goto out_unlock;
 
 	ret = __iommu_attach_group(domain, group);
@@ -1979,7 +1981,7 @@ void iommu_detach_device(struct iommu_domain *domain, struct device *dev)
 		return;
 
 	mutex_lock(&group->mutex);
-	if (iommu_group_device_count(group) != 1) {
+	if (!iommu_group_singleton_lockdown(group)) {
 		WARN_ON(1);
 		goto out_unlock;
 	}
@@ -2745,7 +2747,7 @@ iommu_sva_bind_device(struct device *dev, struct mm_struct *mm, void *drvdata)
 	 * affected by the problems that required IOMMU groups (lack of ACS
 	 * isolation, device ID aliasing and other hardware issues).
 	 */
-	if (iommu_group_device_count(group) != 1)
+	if (!iommu_group_singleton_lockdown(group))
 		goto out_unlock;
 
 	handle = ops->sva_bind(dev, mm, drvdata);
@@ -2842,7 +2844,7 @@ static int iommu_change_dev_def_domain(struct iommu_group *group,
 	 * case) that has already acquired some of the device locks and might be
 	 * waiting for T1 to release other device locks.
 	 */
-	if (iommu_group_device_count(group) != 1) {
+	if (!iommu_group_singleton_lockdown(group)) {
 		dev_err_ratelimited(prev_dev, "Cannot change default domain: Group has more than one device\n");
 		ret = -EINVAL;
 		goto out;
@@ -2975,7 +2977,7 @@ static ssize_t iommu_group_store_type(struct iommu_group *group,
 	 * 2. Get struct *dev which is needed to lock device
 	 */
 	mutex_lock(&group->mutex);
-	if (iommu_group_device_count(group) != 1) {
+	if (!iommu_group_singleton_lockdown(group)) {
 		mutex_unlock(&group->mutex);
 		pr_err_ratelimited("Cannot change default domain: Group has more than one device\n");
 		return -EINVAL;
@@ -3050,6 +3052,7 @@ int iommu_device_use_default_domain(struct device *dev)
 	mutex_lock(&group->mutex);
 	if (group->owner_cnt) {
 		if (group->domain != group->default_domain ||
+		    group->singleton_lockdown ||
 		    group->owner) {
 			ret = -EBUSY;
 			goto unlock_out;
@@ -3083,6 +3086,9 @@ void iommu_device_unuse_default_domain(struct device *dev)
 	mutex_lock(&group->mutex);
 	if (!WARN_ON(!group->owner_cnt))
 		group->owner_cnt--;
+
+	if (!group->owner_cnt)
+		group->singleton_lockdown = false;
 
 	mutex_unlock(&group->mutex);
 	iommu_group_put(group);
