@@ -202,6 +202,9 @@ static struct dev_iommu *dev_iommu_get(struct device *dev)
 		return NULL;
 
 	mutex_init(&param->lock);
+#ifdef CONFIG_IOMMU_SVA
+	xa_init(&param->sva_bonds);
+#endif
 	dev->iommu = param;
 	return param;
 }
