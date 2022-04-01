@@ -27,7 +27,7 @@
 #include <linux/cc_platform.h>
 #include <trace/events/iommu.h>
 
-#include "iommu-sva-lib.h"
+#include "iommu-sva.h"
 
 static struct kset *iommu_group_kset;
 static DEFINE_IDA(iommu_group_ida);
