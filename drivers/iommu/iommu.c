@@ -3173,3 +3173,32 @@ void iommu_detach_device_pasid(struct iommu_domain *domain,
 
 	iommu_group_put(group);
 }
+
+/*
+ * Get the attached domain for asynchronous usage, for example the I/O
+ * page fault handling framework. The caller get a reference counter
+ * of the domain automatically on a successful return and should put
+ * it with iommu_domain_put() after usage.
+ */
+struct iommu_domain *
+iommu_get_domain_for_dev_pasid_async(struct device *dev, ioasid_t pasid)
+{
+	struct iommu_domain *domain;
+	struct iommu_group *group;
+
+	if (!pasid_valid(pasid))
+		return NULL;
+
+	group = iommu_group_get(dev);
+	if (!group)
+		return NULL;
+
+	mutex_lock(&group->mutex);
+	domain = xa_load(&group->pasid_array, pasid);
+	if (domain)
+		refcount_inc(&domain->async_users);
+	mutex_unlock(&group->mutex);
+	iommu_group_put(group);
+
+	return domain;
+}
