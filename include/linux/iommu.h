@@ -51,6 +51,8 @@ struct iommu_sva_ioas;
 typedef int (*iommu_fault_handler_t)(struct iommu_domain *,
 			struct device *, unsigned long, int, void *);
 typedef int (*iommu_dev_fault_handler_t)(struct iommu_fault *, void *);
+typedef enum iommu_page_response_code (*iommu_domain_iopf_handler_t)
+			(struct iommu_fault *, void *);
 
 struct iommu_domain_geometry {
 	dma_addr_t aperture_start; /* First address that can be mapped    */
@@ -102,6 +104,9 @@ struct iommu_domain {
 	struct iommu_domain_geometry geometry;
 	struct iommu_dma_cookie *iova_cookie;
 	struct iommu_sva_ioas *sva_ioas;
+	iommu_domain_iopf_handler_t iopf_handler;
+	void *fault_data;
+	refcount_t async_users;
 };
 
 static inline bool iommu_is_dma_domain(struct iommu_domain *domain)
@@ -680,6 +685,14 @@ int iommu_attach_device_pasid(struct iommu_domain *domain,
 			      struct device *dev, ioasid_t pasid);
 void iommu_detach_device_pasid(struct iommu_domain *domain,
 			       struct device *dev, ioasid_t pasid);
+struct iommu_domain *
+iommu_get_domain_for_dev_pasid_async(struct device *dev, ioasid_t pasid);
+
+static inline void iommu_domain_put_async(struct iommu_domain *domain)
+{
+	if (refcount_dec_and_test(&domain->async_users))
+		iommu_domain_free(domain);
+}
 #else /* CONFIG_IOMMU_API */
 
 struct iommu_ops {};
@@ -1043,6 +1056,12 @@ static inline int iommu_attach_device_pasid(struct iommu_domain *domain,
 static inline void iommu_detach_device_pasid(struct iommu_domain *domain,
 					     struct device *dev, ioasid_t pasid)
 {
+}
+
+static inline struct iommu_domain *
+iommu_get_domain_for_dev_pasid_async(struct device *dev, ioasid_t pasid)
+{
+	return NULL;
 }
 #endif /* CONFIG_IOMMU_API */
 
