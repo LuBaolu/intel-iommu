@@ -48,6 +48,7 @@ struct iommu_group {
 	struct list_head entry;
 	unsigned int owner_cnt;
 	void *owner;
+	bool immutable_singleton;
 };
 
 struct group_device {
@@ -74,6 +75,16 @@ static const char * const iommu_group_resv_type_string[] = {
 #define IOMMU_CMD_LINE_DMA_API		BIT(0)
 #define IOMMU_CMD_LINE_STRICT		BIT(1)
 
+/*
+ * To consider a PCI device isolated, we require ACS to support Source
+ * Validation, Request Redirection, Completer Redirection, and Upstream
+ * Forwarding.  This effectively means that devices cannot spoof their
+ * requester ID, requests and completions cannot be redirected, and all
+ * transactions are forwarded upstream, even as it passes through a
+ * bridge where the target device is downstream.
+ */
+#define REQ_ACS_FLAGS   (PCI_ACS_SV | PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_UF)
+
 static int iommu_alloc_default_domain(struct iommu_group *group,
 				      struct device *dev);
 static struct iommu_domain *__iommu_domain_alloc(struct bus_type *bus,
@@ -89,6 +100,7 @@ static int iommu_create_device_direct_mappings(struct iommu_group *group,
 static struct iommu_group *iommu_group_get_for_dev(struct device *dev);
 static ssize_t iommu_group_store_type(struct iommu_group *group,
 				      const char *buf, size_t count);
+static int iommu_group_device_count(struct iommu_group *group);
 
 #define IOMMU_GROUP_ATTR(_name, _mode, _show, _store)		\
 struct iommu_group_attribute iommu_group_attr_##_name =		\
@@ -844,6 +856,37 @@ static bool iommu_is_attach_deferred(struct device *dev)
 	return false;
 }
 
+static int has_pci_alias(struct pci_dev *pdev, u16 alias, void *opaque)
+{
+	return -EEXIST;
+}
+
+static bool pci_immutably_isolated(struct pci_dev *pdev)
+{
+	/* Skip the bridges. */
+	if (pci_is_bridge(pdev))
+		return false;
+
+	/*
+	 * The device could be considered to be fully isolated if
+	 * all devices on the path from the parent to the host-PCI
+	 * bridge are protected from peer-to-peer DMA by ACS.
+	 */
+	if (!pci_is_root_bus(pdev->bus) &&
+	    !pci_acs_path_enabled(pdev->bus->self, NULL, REQ_ACS_FLAGS))
+		return false;
+
+	/* Multi-function devices should have ACS enabled. */
+	if (pdev->multifunction && !pci_acs_enabled(pdev, REQ_ACS_FLAGS))
+		return false;
+
+	/* Filter out devices which has any alias device. */
+	if (pci_for_each_dma_alias(pdev, has_pci_alias, NULL))
+		return false;
+
+	return true;
+}
+
 /**
  * iommu_group_add_device - add a device to an iommu group
  * @group: the group into which to add the device (reference should be held)
@@ -898,6 +941,20 @@ rename:
 	list_add_tail(&device->list, &group->devices);
 	if (group->domain  && !iommu_is_attach_deferred(dev))
 		ret = __iommu_attach_device(group->domain, dev);
+
+	/*
+	 * Use standard PCI bus topology, isolation features, and DMA
+	 * alias quirks to set the immutable singleton attribute. If
+	 * the device came from DT, assume it is static and then
+	 * singleton can know from the device count in the group.
+	 */
+	if (dev_is_pci(dev))
+		group->immutable_singleton =
+				pci_immutably_isolated(to_pci_dev(dev));
+	else if (is_of_node(dev_fwnode(dev)))
+		group->immutable_singleton =
+				(iommu_group_device_count(group) == 1);
+
 	mutex_unlock(&group->mutex);
 	if (ret)
 		goto err_put_group;
@@ -1289,16 +1346,6 @@ EXPORT_SYMBOL_GPL(iommu_group_id);
 
 static struct iommu_group *get_pci_alias_group(struct pci_dev *pdev,
 					       unsigned long *devfns);
-
-/*
- * To consider a PCI device isolated, we require ACS to support Source
- * Validation, Request Redirection, Completer Redirection, and Upstream
- * Forwarding.  This effectively means that devices cannot spoof their
- * requester ID, requests and completions cannot be redirected, and all
- * transactions are forwarded upstream, even as it passes through a
- * bridge where the target device is downstream.
- */
-#define REQ_ACS_FLAGS   (PCI_ACS_SV | PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_UF)
 
 /*
  * For multifunction devices which are not isolated from each other, find
