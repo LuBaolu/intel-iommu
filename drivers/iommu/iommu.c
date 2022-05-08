@@ -3172,3 +3172,30 @@ void iommu_detach_device_pasid(struct iommu_domain *domain,
 
 	iommu_group_put(group);
 }
+
+struct iommu_domain *iommu_get_domain_for_iopf(struct device *dev,
+					       ioasid_t pasid)
+{
+	struct iommu_domain *domain;
+	struct iommu_group *group;
+
+	if (!pasid_valid(pasid))
+		return NULL;
+
+	group = iommu_group_get(dev);
+	if (!group)
+		return NULL;
+
+	/*
+	 * Safe to fetch outside the group mutex because:
+	 *
+	 * - The xarray protects its internal state with RCU;
+	 * - The domain obtained is either NULL or fully formed;
+	 * - Current IOPF framework requires that all IOPFs should be quieted
+	 *   and flushed from the pending list before the domain is freed.
+	 */
+	domain = xa_load(&group->pasid_array, pasid);
+	iommu_group_put(group);
+
+	return domain;
+}
