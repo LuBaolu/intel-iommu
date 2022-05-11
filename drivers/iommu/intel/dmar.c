@@ -1126,6 +1126,10 @@ static int alloc_iommu(struct dmar_drhd_unit *drhd)
 
 	raw_spin_lock_init(&iommu->register_lock);
 
+	/* Supports full 20-bit PASID in scalable mode. */
+	if (ecap_pasid(iommu->ecap))
+		iommu->iommu.pasids = 1UL << 20;
+
 	/*
 	 * This is only for hotplug; at boot time intel_iommu_enabled won't
 	 * be set yet. When intel_iommu_init() runs, it registers the units
