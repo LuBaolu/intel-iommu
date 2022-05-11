@@ -7,6 +7,7 @@
 
 #include <linux/ioasid.h>
 #include <linux/mm_types.h>
+#include <linux/iommu.h>
 
 int iommu_sva_alloc_pasid(struct mm_struct *mm, ioasid_t min, ioasid_t max);
 struct mm_struct *iommu_sva_find(ioasid_t pasid);
@@ -15,6 +16,20 @@ struct mm_struct *iommu_sva_find(ioasid_t pasid);
 struct device;
 struct iommu_fault;
 struct iopf_queue;
+
+struct iommu_sva_domain {
+	struct iommu_domain	domain;
+	struct mm_struct	*mm;
+};
+
+#define to_sva_domain(d) container_of_safe(d, struct iommu_sva_domain, domain)
+
+static inline struct mm_struct *domain_to_mm(struct iommu_domain *domain)
+{
+	struct iommu_sva_domain *sva_domain = to_sva_domain(domain);
+
+	return sva_domain->mm;
+}
 
 #ifdef CONFIG_IOMMU_SVA
 int iommu_queue_iopf(struct iommu_fault *fault, void *cookie);

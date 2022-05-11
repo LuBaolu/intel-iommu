@@ -69,3 +69,51 @@ struct mm_struct *iommu_sva_find(ioasid_t pasid)
 	return ioasid_find(&iommu_sva_pasid, pasid, __mmget_not_zero);
 }
 EXPORT_SYMBOL_GPL(iommu_sva_find);
+
+/*
+ * IOMMU SVA driver-oriented interfaces
+ */
+struct iommu_domain *
+iommu_sva_alloc_domain(struct bus_type *bus, struct mm_struct *mm)
+{
+	struct iommu_sva_domain *sva_domain;
+	struct iommu_domain *domain;
+
+	if (!bus->iommu_ops || !bus->iommu_ops->sva_domain_ops)
+		return ERR_PTR(-ENODEV);
+
+	sva_domain = kzalloc(sizeof(*sva_domain), GFP_KERNEL);
+	if (!sva_domain)
+		return ERR_PTR(-ENOMEM);
+
+	mmgrab(mm);
+	sva_domain->mm = mm;
+
+	domain = &sva_domain->domain;
+	domain->type = IOMMU_DOMAIN_SVA;
+	domain->ops = bus->iommu_ops->sva_domain_ops;
+
+	return domain;
+}
+
+void iommu_sva_free_domain(struct iommu_domain *domain)
+{
+	struct iommu_sva_domain *sva_domain = to_sva_domain(domain);
+
+	mmdrop(sva_domain->mm);
+	kfree(sva_domain);
+}
+
+int iommu_sva_set_domain(struct iommu_domain *domain, struct device *dev,
+			 ioasid_t pasid)
+{
+	struct bus_type *bus = dev->bus;
+
+	if (!bus || !bus->iommu_ops || !bus->iommu_ops->sva_domain_ops)
+		return -ENODEV;
+
+	if (domain->ops != bus->iommu_ops->sva_domain_ops)
+		return -EINVAL;
+
+	return iommu_set_device_pasid(domain, dev, pasid);
+}

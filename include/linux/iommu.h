@@ -64,6 +64,9 @@ struct iommu_domain_geometry {
 #define __IOMMU_DOMAIN_PT	(1U << 2)  /* Domain is identity mapped   */
 #define __IOMMU_DOMAIN_DMA_FQ	(1U << 3)  /* DMA-API uses flush queue    */
 
+#define __IOMMU_DOMAIN_SHARED	(1U << 4)  /* Page table shared from CPU  */
+#define __IOMMU_DOMAIN_HOST_VA	(1U << 5)  /* Host CPU virtual address */
+
 /*
  * This are the possible domain-types
  *
@@ -86,6 +89,8 @@ struct iommu_domain_geometry {
 #define IOMMU_DOMAIN_DMA_FQ	(__IOMMU_DOMAIN_PAGING |	\
 				 __IOMMU_DOMAIN_DMA_API |	\
 				 __IOMMU_DOMAIN_DMA_FQ)
+#define IOMMU_DOMAIN_SVA	(__IOMMU_DOMAIN_SHARED |	\
+				 __IOMMU_DOMAIN_HOST_VA)
 
 struct iommu_domain {
 	unsigned type;
@@ -254,6 +259,7 @@ struct iommu_ops {
 	int (*def_domain_type)(struct device *dev);
 
 	const struct iommu_domain_ops *default_domain_ops;
+	const struct iommu_domain_ops *sva_domain_ops;
 	unsigned long pgsize_bitmap;
 	struct module *owner;
 };
@@ -262,6 +268,8 @@ struct iommu_ops {
  * struct iommu_domain_ops - domain specific operations
  * @attach_dev: attach an iommu domain to a device
  * @detach_dev: detach an iommu domain from a device
+ * @set_dev_pasid: set an iommu domain to a pasid of device
+ * @block_dev_pasid: block pasid of device from using iommu domain
  * @map: map a physically contiguous memory region to an iommu domain
  * @map_pages: map a physically contiguous set of pages of the same size to
  *             an iommu domain.
@@ -282,6 +290,10 @@ struct iommu_ops {
 struct iommu_domain_ops {
 	int (*attach_dev)(struct iommu_domain *domain, struct device *dev);
 	void (*detach_dev)(struct iommu_domain *domain, struct device *dev);
+	int (*set_dev_pasid)(struct iommu_domain *domain, struct device *dev,
+			     ioasid_t pasid);
+	void (*block_dev_pasid)(struct iommu_domain *domain, struct device *dev,
+				ioasid_t pasid);
 
 	int (*map)(struct iommu_domain *domain, unsigned long iova,
 		   phys_addr_t paddr, size_t size, int prot, gfp_t gfp);
@@ -677,6 +689,10 @@ int iommu_group_claim_dma_owner(struct iommu_group *group, void *owner);
 void iommu_group_release_dma_owner(struct iommu_group *group);
 bool iommu_group_dma_owner_claimed(struct iommu_group *group);
 
+int iommu_set_device_pasid(struct iommu_domain *domain, struct device *dev,
+			   ioasid_t pasid);
+void iommu_block_device_pasid(struct iommu_domain *domain, struct device *dev,
+			      ioasid_t pasid);
 #else /* CONFIG_IOMMU_API */
 
 struct iommu_ops {};
@@ -1050,6 +1066,17 @@ static inline bool iommu_group_dma_owner_claimed(struct iommu_group *group)
 {
 	return false;
 }
+
+static inline int iommu_set_device_pasid(struct iommu_domain *domain,
+					 struct device *dev, ioasid_t pasid)
+{
+	return -ENODEV;
+}
+
+static inline void iommu_block_device_pasid(struct iommu_domain *domain,
+					    struct device *dev, ioasid_t pasid)
+{
+}
 #endif /* CONFIG_IOMMU_API */
 
 /**
@@ -1074,5 +1101,29 @@ void iommu_debugfs_setup(void);
 #else
 static inline void iommu_debugfs_setup(void) {}
 #endif
+
+#ifdef CONFIG_IOMMU_SVA
+struct iommu_domain *
+iommu_sva_alloc_domain(struct bus_type *bus, struct mm_struct *mm);
+void iommu_sva_free_domain(struct iommu_domain *domain);
+int iommu_sva_set_domain(struct iommu_domain *domain, struct device *dev,
+			 ioasid_t pasid);
+#else /* CONFIG_IOMMU_SVA */
+static inline struct iommu_domain *
+iommu_sva_alloc_domain(struct bus_type *bus, struct mm_struct *mm)
+{
+	return ERR_PTR(-EINVAL);
+}
+
+static inline void iommu_sva_free_domain(struct iommu_domain *domain)
+{
+}
+
+static inline int iommu_sva_set_domain(struct iommu_domain *domain,
+				       struct device *dev, ioasid_t pasid)
+{
+	return -EINVAL;
+}
+#endif /* CONFIG_IOMMU_SVA */
 
 #endif /* __LINUX_IOMMU_H */
