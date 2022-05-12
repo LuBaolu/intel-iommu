@@ -744,6 +744,10 @@ void intel_svm_unbind(struct iommu_sva *handle);
 u32 intel_svm_get_pasid(struct iommu_sva *handle);
 int intel_svm_page_response(struct device *dev, struct iommu_fault_event *evt,
 			    struct iommu_page_response *msg);
+int intel_svm_attach_dev_pasid(struct iommu_domain *domain,
+			       struct device *dev, ioasid_t pasid);
+void intel_svm_detach_dev_pasid(struct iommu_domain *domain,
+				struct device *dev, ioasid_t pasid);
 
 struct intel_svm_dev {
 	struct list_head list;

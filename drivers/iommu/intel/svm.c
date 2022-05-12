@@ -323,6 +323,7 @@ static int intel_svm_alloc_pasid(struct device *dev, struct mm_struct *mm)
 
 static struct iommu_sva *intel_svm_bind_mm(struct intel_iommu *iommu,
 					   struct device *dev,
+					   ioasid_t pasid,
 					   struct mm_struct *mm)
 {
 	struct device_domain_info *info = dev_iommu_priv_get(dev);
@@ -331,13 +332,13 @@ static struct iommu_sva *intel_svm_bind_mm(struct intel_iommu *iommu,
 	struct intel_svm *svm;
 	int ret = 0;
 
-	svm = pasid_private_find(mm->pasid);
+	svm = pasid_private_find(pasid);
 	if (!svm) {
 		svm = kzalloc(sizeof(*svm), GFP_KERNEL);
 		if (!svm)
 			return ERR_PTR(-ENOMEM);
 
-		svm->pasid = mm->pasid;
+		svm->pasid = pasid;
 		svm->mm = mm;
 		INIT_LIST_HEAD_RCU(&svm->devs);
 
@@ -387,7 +388,7 @@ static struct iommu_sva *intel_svm_bind_mm(struct intel_iommu *iommu,
 	/* Setup the pasid table: */
 	sflags = cpu_feature_enabled(X86_FEATURE_LA57) ? PASID_FLAG_FL5LP : 0;
 	spin_lock_irqsave(&iommu->lock, iflags);
-	ret = intel_pasid_setup_first_level(iommu, dev, mm->pgd, mm->pasid,
+	ret = intel_pasid_setup_first_level(iommu, dev, mm->pgd, pasid,
 					    FLPT_DEFAULT_DID, sflags);
 	spin_unlock_irqrestore(&iommu->lock, iflags);
 
@@ -403,7 +404,7 @@ free_sdev:
 free_svm:
 	if (list_empty(&svm->devs)) {
 		mmu_notifier_unregister(&svm->notifier, mm);
-		pasid_private_remove(mm->pasid);
+		pasid_private_remove(pasid);
 		kfree(svm);
 	}
 
@@ -822,7 +823,7 @@ struct iommu_sva *intel_svm_bind(struct device *dev, struct mm_struct *mm)
 		return ERR_PTR(ret);
 	}
 
-	sva = intel_svm_bind_mm(iommu, dev, mm);
+	sva = intel_svm_bind_mm(iommu, dev, mm->pasid, mm);
 	mutex_unlock(&pasid_mutex);
 
 	return sva;
@@ -930,4 +931,30 @@ int intel_svm_page_response(struct device *dev,
 out:
 	mutex_unlock(&pasid_mutex);
 	return ret;
+}
+
+int intel_svm_attach_dev_pasid(struct iommu_domain *domain,
+			       struct device *dev, ioasid_t pasid)
+{
+	struct device_domain_info *info = dev_iommu_priv_get(dev);
+	struct mm_struct *mm = domain_to_mm(domain);
+	struct intel_iommu *iommu = info->iommu;
+	struct iommu_sva *sva;
+	int ret = 0;
+
+	mutex_lock(&pasid_mutex);
+	sva = intel_svm_bind_mm(iommu, dev, pasid, mm);
+	if (IS_ERR(sva))
+		ret = PTR_ERR(sva);
+	mutex_unlock(&pasid_mutex);
+
+	return ret;
+}
+
+void intel_svm_detach_dev_pasid(struct iommu_domain *domain,
+				struct device *dev, ioasid_t pasid)
+{
+	mutex_lock(&pasid_mutex);
+	intel_svm_unbind_mm(dev, pasid);
+	mutex_unlock(&pasid_mutex);
 }

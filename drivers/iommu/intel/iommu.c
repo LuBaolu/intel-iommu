@@ -4923,6 +4923,10 @@ const struct iommu_ops intel_iommu_ops = {
 	.sva_unbind		= intel_svm_unbind,
 	.sva_get_pasid		= intel_svm_get_pasid,
 	.page_response		= intel_svm_page_response,
+	.sva_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev_pasid		= intel_svm_attach_dev_pasid,
+		.block_dev_pasid	= intel_svm_detach_dev_pasid,
+	},
 #endif
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev		= intel_iommu_attach_device,
