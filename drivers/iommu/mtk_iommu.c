@@ -926,6 +926,14 @@ static void mtk_iommu_get_resv_regions(struct device *dev,
 	}
 }
 
+static int mtk_blocking_domain_set_dev(struct iommu_domain *domain,
+				       struct device *dev)
+{
+	mtk_iommu_detach_device(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops mtk_iommu_ops = {
 	.domain_alloc	= mtk_iommu_domain_alloc,
 	.probe_device	= mtk_iommu_probe_device,
@@ -946,6 +954,10 @@ static const struct iommu_ops mtk_iommu_ops = {
 		.iotlb_sync_map	= mtk_iommu_sync_map,
 		.iova_to_phys	= mtk_iommu_iova_to_phys,
 		.free		= mtk_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= mtk_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

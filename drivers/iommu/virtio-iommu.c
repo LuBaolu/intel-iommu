@@ -1023,6 +1023,9 @@ static struct iommu_ops viommu_ops = {
 		.iova_to_phys		= viommu_iova_to_phys,
 		.iotlb_sync		= viommu_iotlb_sync,
 		.free			= viommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev		= viommu_attach_dev,
 	}
 };
 

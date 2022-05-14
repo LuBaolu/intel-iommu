@@ -587,6 +587,14 @@ static int qcom_iommu_of_xlate(struct device *dev, struct of_phandle_args *args)
 	return iommu_fwspec_add_ids(dev, &asid, 1);
 }
 
+static int qcom_blocking_domain_set_dev(struct iommu_domain *domain,
+					struct device *dev)
+{
+	qcom_iommu_detach_dev(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops qcom_iommu_ops = {
 	.capable	= qcom_iommu_capable,
 	.domain_alloc	= qcom_iommu_domain_alloc,
@@ -604,6 +612,10 @@ static const struct iommu_ops qcom_iommu_ops = {
 		.iotlb_sync	= qcom_iommu_iotlb_sync,
 		.iova_to_phys	= qcom_iommu_iova_to_phys,
 		.free		= qcom_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= qcom_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

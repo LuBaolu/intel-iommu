@@ -2867,6 +2867,9 @@ static struct iommu_ops arm_smmu_ops = {
 		.iova_to_phys		= arm_smmu_iova_to_phys,
 		.enable_nesting		= arm_smmu_enable_nesting,
 		.free			= arm_smmu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev		= arm_smmu_attach_dev,
 	}
 };
 

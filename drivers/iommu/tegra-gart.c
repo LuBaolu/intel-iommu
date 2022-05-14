@@ -270,6 +270,14 @@ static void gart_iommu_sync(struct iommu_domain *domain,
 	gart_iommu_sync_map(domain, gather->start, length);
 }
 
+static int gart_blocking_domain_set_dev(struct iommu_domain *domain,
+					struct device *dev)
+{
+	gart_iommu_detach_dev(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops gart_iommu_ops = {
 	.domain_alloc	= gart_iommu_domain_alloc,
 	.probe_device	= gart_iommu_probe_device,
@@ -286,6 +294,10 @@ static const struct iommu_ops gart_iommu_ops = {
 		.iotlb_sync_map	= gart_iommu_sync_map,
 		.iotlb_sync	= gart_iommu_sync,
 		.free		= gart_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev		= gart_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

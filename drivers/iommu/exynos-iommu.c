@@ -1307,6 +1307,14 @@ static int exynos_iommu_of_xlate(struct device *dev,
 	return 0;
 }
 
+static int exynos_blocking_domain_set_dev(struct iommu_domain *domain,
+					  struct device *dev)
+{
+	exynos_iommu_detach_device(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops exynos_iommu_ops = {
 	.domain_alloc = exynos_iommu_domain_alloc,
 	.device_group = generic_device_group,
@@ -1321,6 +1329,10 @@ static const struct iommu_ops exynos_iommu_ops = {
 		.unmap		= exynos_iommu_unmap,
 		.iova_to_phys	= exynos_iommu_iova_to_phys,
 		.free		= exynos_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= exynos_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

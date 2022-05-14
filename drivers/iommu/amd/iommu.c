@@ -2272,6 +2272,14 @@ static bool amd_iommu_enforce_cache_coherency(struct iommu_domain *domain)
 	return true;
 }
 
+static int amd_blocking_domain_set_dev(struct iommu_domain *domain,
+				       struct device *dev)
+{
+	amd_iommu_detach_device(domain, dev);
+
+	return 0;
+}
+
 const struct iommu_ops amd_iommu_ops = {
 	.capable = amd_iommu_capable,
 	.domain_alloc = amd_iommu_domain_alloc,
@@ -2295,6 +2303,10 @@ const struct iommu_ops amd_iommu_ops = {
 		.iotlb_sync	= amd_iommu_iotlb_sync,
 		.free		= amd_iommu_domain_free,
 		.enforce_cache_coherency = amd_iommu_enforce_cache_coherency,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= amd_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

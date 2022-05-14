@@ -451,6 +451,14 @@ static void fsl_pamu_release_device(struct device *dev)
 {
 }
 
+static int fsl_pamu_blocking_domain_set_dev(struct iommu_domain *domain,
+					    struct device *dev)
+{
+	fsl_pamu_detach_device(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops fsl_pamu_ops = {
 	.capable	= fsl_pamu_capable,
 	.domain_alloc	= fsl_pamu_domain_alloc,
@@ -462,6 +470,10 @@ static const struct iommu_ops fsl_pamu_ops = {
 		.detach_dev	= fsl_pamu_detach_device,
 		.iova_to_phys	= fsl_pamu_iova_to_phys,
 		.free		= fsl_pamu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= fsl_pamu_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

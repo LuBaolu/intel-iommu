@@ -867,6 +867,14 @@ static struct iommu_group *ipmmu_find_group(struct device *dev)
 	return group;
 }
 
+static int ipmmu_blocking_domain_set_dev(struct iommu_domain *domain,
+					 struct device *dev)
+{
+	ipmmu_detach_device(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops ipmmu_ops = {
 	.domain_alloc = ipmmu_domain_alloc,
 	.probe_device = ipmmu_probe_device,
@@ -885,6 +893,10 @@ static const struct iommu_ops ipmmu_ops = {
 		.iotlb_sync	= ipmmu_iotlb_sync,
 		.iova_to_phys	= ipmmu_iova_to_phys,
 		.free		= ipmmu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= ipmmu_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

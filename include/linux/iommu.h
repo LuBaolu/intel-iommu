@@ -216,6 +216,7 @@ struct iommu_iotlb_gather {
  *		- IOMMU_DOMAIN_DMA: must use a dma domain
  *		- 0: use the default setting
  * @default_domain_ops: the default ops for domains
+ * @blocking_domain_ops: the blocking ops for domains
  * @pgsize_bitmap: bitmap of all possible supported page sizes
  * @owner: Driver module providing these ops
  */
@@ -255,6 +256,7 @@ struct iommu_ops {
 	int (*def_domain_type)(struct device *dev);
 
 	const struct iommu_domain_ops *default_domain_ops;
+	const struct iommu_domain_ops *blocking_domain_ops;
 	unsigned long pgsize_bitmap;
 	struct module *owner;
 };
@@ -279,6 +281,9 @@ struct iommu_ops {
  * @enable_nesting: Enable nesting
  * @set_pgtable_quirks: Set io page table quirks (IO_PGTABLE_QUIRK_*)
  * @free: Release the domain after use.
+ * @blocking_domain_detach: iommu hardware support detaching a domain from
+ *		a device, hence setting blocking domain to a device equals to
+ *		detach the existing domain from it.
  */
 struct iommu_domain_ops {
 	int (*set_dev)(struct iommu_domain *domain, struct device *dev);
@@ -310,6 +315,8 @@ struct iommu_domain_ops {
 				  unsigned long quirks);
 
 	void (*free)(struct iommu_domain *domain);
+
+	unsigned int blocking_domain_detach:1;
 };
 
 /**

@@ -4904,6 +4904,14 @@ static void intel_iommu_iotlb_sync_map(struct iommu_domain *domain,
 	}
 }
 
+static int intel_blocking_domain_set_dev(struct iommu_domain *domain,
+					 struct device *dev)
+{
+	intel_iommu_detach_device(domain, dev);
+
+	return 0;
+}
+
 const struct iommu_ops intel_iommu_ops = {
 	.capable		= intel_iommu_capable,
 	.domain_alloc		= intel_iommu_domain_alloc,
@@ -4935,6 +4943,10 @@ const struct iommu_ops intel_iommu_ops = {
 		.iova_to_phys		= intel_iommu_iova_to_phys,
 		.free			= intel_iommu_domain_free,
 		.enforce_cache_coherency = intel_iommu_enforce_cache_coherency,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev		= intel_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

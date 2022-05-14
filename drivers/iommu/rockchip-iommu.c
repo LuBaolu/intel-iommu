@@ -1185,6 +1185,14 @@ static int rk_iommu_of_xlate(struct device *dev,
 	return 0;
 }
 
+static int rk_blocking_domain_set_dev(struct iommu_domain *domain,
+				      struct device *dev)
+{
+	rk_iommu_detach_device(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops rk_iommu_ops = {
 	.domain_alloc = rk_iommu_domain_alloc,
 	.probe_device = rk_iommu_probe_device,
@@ -1199,6 +1207,10 @@ static const struct iommu_ops rk_iommu_ops = {
 		.unmap		= rk_iommu_unmap,
 		.iova_to_phys	= rk_iommu_iova_to_phys,
 		.free		= rk_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= rk_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

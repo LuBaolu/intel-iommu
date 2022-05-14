@@ -674,6 +674,14 @@ fail:
 	return 0;
 }
 
+static int msm_blocking_domain_set_dev(struct iommu_domain *domain,
+				       struct device *dev)
+{
+	msm_iommu_detach_dev(domain, dev);
+
+	return 0;
+}
+
 static struct iommu_ops msm_iommu_ops = {
 	.domain_alloc = msm_iommu_domain_alloc,
 	.probe_device = msm_iommu_probe_device,
@@ -696,6 +704,10 @@ static struct iommu_ops msm_iommu_ops = {
 		.iotlb_sync_map	= msm_iommu_sync_map,
 		.iova_to_phys	= msm_iommu_iova_to_phys,
 		.free		= msm_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= msm_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

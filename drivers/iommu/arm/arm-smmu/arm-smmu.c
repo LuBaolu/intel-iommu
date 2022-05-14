@@ -1606,6 +1606,9 @@ static struct iommu_ops arm_smmu_ops = {
 		.enable_nesting		= arm_smmu_enable_nesting,
 		.set_pgtable_quirks	= arm_smmu_set_pgtable_quirks,
 		.free			= arm_smmu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev		= arm_smmu_attach_dev,
 	}
 };
 

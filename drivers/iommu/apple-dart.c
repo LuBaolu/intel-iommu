@@ -763,6 +763,14 @@ static void apple_dart_get_resv_regions(struct device *dev,
 	iommu_dma_get_resv_regions(dev, head);
 }
 
+static int apple_dart_blocking_domain_set_dev(struct iommu_domain *domain,
+					      struct device *dev)
+{
+	apple_dart_detach_dev(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops apple_dart_iommu_ops = {
 	.domain_alloc = apple_dart_domain_alloc,
 	.probe_device = apple_dart_probe_device,
@@ -784,6 +792,10 @@ static const struct iommu_ops apple_dart_iommu_ops = {
 		.iotlb_sync_map	= apple_dart_iotlb_sync_map,
 		.iova_to_phys	= apple_dart_iova_to_phys,
 		.free		= apple_dart_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= apple_dart_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

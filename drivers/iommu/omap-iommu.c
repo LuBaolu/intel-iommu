@@ -1732,6 +1732,14 @@ static struct iommu_group *omap_iommu_device_group(struct device *dev)
 	return group;
 }
 
+static int omap_blocking_domain_set_dev(struct iommu_domain *domain,
+					struct device *dev)
+{
+	omap_iommu_detach_dev(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops omap_iommu_ops = {
 	.domain_alloc	= omap_iommu_domain_alloc,
 	.probe_device	= omap_iommu_probe_device,
@@ -1745,6 +1753,10 @@ static const struct iommu_ops omap_iommu_ops = {
 		.unmap		= omap_iommu_unmap,
 		.iova_to_phys	= omap_iommu_iova_to_phys,
 		.free		= omap_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= omap_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

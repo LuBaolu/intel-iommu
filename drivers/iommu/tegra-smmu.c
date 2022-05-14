@@ -963,6 +963,14 @@ static int tegra_smmu_of_xlate(struct device *dev,
 	return iommu_fwspec_add_ids(dev, &id, 1);
 }
 
+static int tegra_smmu_blocking_domain_set_dev(struct iommu_domain *domain,
+					      struct device *dev)
+{
+	tegra_smmu_detach_dev(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops tegra_smmu_ops = {
 	.domain_alloc = tegra_smmu_domain_alloc,
 	.probe_device = tegra_smmu_probe_device,
@@ -977,6 +985,10 @@ static const struct iommu_ops tegra_smmu_ops = {
 		.unmap		= tegra_smmu_unmap,
 		.iova_to_phys	= tegra_smmu_iova_to_phys,
 		.free		= tegra_smmu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev		= tegra_smmu_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

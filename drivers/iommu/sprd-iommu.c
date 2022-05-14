@@ -413,6 +413,13 @@ static int sprd_iommu_of_xlate(struct device *dev, struct of_phandle_args *args)
 	return 0;
 }
 
+static int sprd_blocking_domain_set_dev(struct iommu_domain *domain,
+					struct device *dev)
+{
+	sprd_iommu_detach_device(domain, dev);
+
+	return 0;
+}
 
 static const struct iommu_ops sprd_iommu_ops = {
 	.domain_alloc	= sprd_iommu_domain_alloc,
@@ -431,6 +438,10 @@ static const struct iommu_ops sprd_iommu_ops = {
 		.iotlb_sync	= sprd_iommu_sync,
 		.iova_to_phys	= sprd_iommu_iova_to_phys,
 		.free		= sprd_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev		= sprd_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

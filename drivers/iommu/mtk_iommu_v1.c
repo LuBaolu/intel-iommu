@@ -584,6 +584,14 @@ static int mtk_iommu_v1_hw_init(const struct mtk_iommu_v1_data *data)
 	return 0;
 }
 
+static int mtk_blocking_domain_set_dev(struct iommu_domain *domain,
+				       struct device *dev)
+{
+	mtk_iommu_v1_detach_device(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops mtk_iommu_v1_ops = {
 	.domain_alloc	= mtk_iommu_v1_domain_alloc,
 	.probe_device	= mtk_iommu_v1_probe_device,
@@ -600,6 +608,10 @@ static const struct iommu_ops mtk_iommu_v1_ops = {
 		.unmap		= mtk_iommu_v1_unmap,
 		.iova_to_phys	= mtk_iommu_v1_iova_to_phys,
 		.free		= mtk_iommu_v1_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev	= mtk_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 

@@ -758,6 +758,14 @@ static int sun50i_iommu_of_xlate(struct device *dev,
 	return iommu_fwspec_add_ids(dev, &id, 1);
 }
 
+static int sun50i_blocking_domain_set_dev(struct iommu_domain *domain,
+					  struct device *dev)
+{
+	sun50i_iommu_detach_device(domain, dev);
+
+	return 0;
+}
+
 static const struct iommu_ops sun50i_iommu_ops = {
 	.pgsize_bitmap	= SZ_4K,
 	.device_group	= sun50i_iommu_device_group,
@@ -774,6 +782,10 @@ static const struct iommu_ops sun50i_iommu_ops = {
 		.map		= sun50i_iommu_map,
 		.unmap		= sun50i_iommu_unmap,
 		.free		= sun50i_iommu_domain_free,
+	},
+	.blocking_domain_ops = &(const struct iommu_domain_ops) {
+		.set_dev		= sun50i_blocking_domain_set_dev,
+		.blocking_domain_detach = true,
 	}
 };
 
