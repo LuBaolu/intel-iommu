@@ -1963,10 +1963,10 @@ static int __iommu_attach_device(struct iommu_domain *domain,
 {
 	int ret;
 
-	if (unlikely(domain->ops->attach_dev == NULL))
+	if (unlikely(domain->ops->set_dev == NULL))
 		return -ENODEV;
 
-	ret = domain->ops->attach_dev(domain, dev);
+	ret = domain->ops->set_dev(domain, dev);
 	if (!ret)
 		trace_attach_device_to_domain(dev);
 	return ret;
@@ -2142,7 +2142,7 @@ static int __iommu_group_set_domain(struct iommu_group *group,
 	}
 
 	/*
-	 * Changing the domain is done by calling attach_dev() on the new
+	 * Changing the domain is done by calling set_dev() on the new
 	 * domain. This switch does not have to be atomic and DMA can be
 	 * discarded during the transition. DMA must only be able to access
 	 * either new_domain or group->domain, never something else.
