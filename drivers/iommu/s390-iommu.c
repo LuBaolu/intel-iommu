@@ -386,7 +386,6 @@ static const struct iommu_ops s390_iommu_ops = {
 	.pgsize_bitmap = S390_IOMMU_PGSIZES,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.set_dev	= s390_iommu_attach_device,
-		.detach_dev	= s390_iommu_detach_device,
 		.map		= s390_iommu_map,
 		.unmap		= s390_iommu_unmap,
 		.iova_to_phys	= s390_iommu_iova_to_phys,

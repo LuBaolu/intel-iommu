@@ -431,7 +431,6 @@ static const struct iommu_ops sprd_iommu_ops = {
 	.owner		= THIS_MODULE,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.set_dev	= sprd_iommu_attach_device,
-		.detach_dev	= sprd_iommu_detach_device,
 		.map		= sprd_iommu_map,
 		.unmap		= sprd_iommu_unmap,
 		.iotlb_sync_map	= sprd_iommu_sync_map,

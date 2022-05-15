@@ -886,7 +886,6 @@ static const struct iommu_ops ipmmu_ops = {
 	.of_xlate = ipmmu_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.set_dev	= ipmmu_attach_device,
-		.detach_dev	= ipmmu_detach_device,
 		.map		= ipmmu_map,
 		.unmap		= ipmmu_unmap,
 		.flush_iotlb_all = ipmmu_flush_iotlb_all,

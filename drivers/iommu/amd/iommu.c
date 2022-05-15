@@ -2294,7 +2294,6 @@ const struct iommu_ops amd_iommu_ops = {
 	.def_domain_type = amd_iommu_def_domain_type,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.set_dev	= amd_iommu_attach_device,
-		.detach_dev	= amd_iommu_detach_device,
 		.map		= amd_iommu_map,
 		.unmap		= amd_iommu_unmap,
 		.iotlb_sync_map	= amd_iommu_iotlb_sync_map,

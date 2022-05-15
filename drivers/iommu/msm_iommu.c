@@ -691,7 +691,6 @@ static struct iommu_ops msm_iommu_ops = {
 	.of_xlate = qcom_iommu_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.set_dev	= msm_iommu_attach_dev,
-		.detach_dev	= msm_iommu_detach_dev,
 		.map		= msm_iommu_map,
 		.unmap		= msm_iommu_unmap,
 		/*

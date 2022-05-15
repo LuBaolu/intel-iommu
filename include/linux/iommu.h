@@ -264,7 +264,6 @@ struct iommu_ops {
 /**
  * struct iommu_domain_ops - domain specific operations
  * @set_dev: set an iommu domain to a device
- * @detach_dev: detach an iommu domain from a device
  * @map: map a physically contiguous memory region to an iommu domain
  * @map_pages: map a physically contiguous set of pages of the same size to
  *             an iommu domain.
@@ -287,7 +286,6 @@ struct iommu_ops {
  */
 struct iommu_domain_ops {
 	int (*set_dev)(struct iommu_domain *domain, struct device *dev);
-	void (*detach_dev)(struct iommu_domain *domain, struct device *dev);
 
 	int (*map)(struct iommu_domain *domain, unsigned long iova,
 		   phys_addr_t paddr, size_t size, int prot, gfp_t gfp);
