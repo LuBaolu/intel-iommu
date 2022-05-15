@@ -604,8 +604,6 @@ static void iommu_group_release(struct kobject *kobj)
 
 	if (group->default_domain)
 		iommu_domain_free(group->default_domain);
-	if (group->blocking_domain)
-		iommu_domain_free(group->blocking_domain);
 
 	kfree(group->name);
 	kfree(group);
@@ -854,6 +852,46 @@ static bool iommu_is_attach_deferred(struct device *dev)
 	return false;
 }
 
+static int iommu_group_alloc_blocking_domain(struct iommu_group *group,
+					     struct device *dev)
+{
+	struct iommu_domain *domain;
+	const struct iommu_ops *iommu_ops = dev_iommu_ops(dev);
+	const struct iommu_domain_ops *ops = iommu_ops->blocking_domain_ops;
+
+	if (group->blocking_domain)
+		return 0;
+
+	if (ops->blocking_domain_detach) {
+		domain = kzalloc(sizeof(*domain), GFP_KERNEL);
+		if (domain)
+			domain->type = IOMMU_DOMAIN_BLOCKED;
+	} else {
+		domain = __iommu_domain_alloc(dev->bus, IOMMU_DOMAIN_UNMANAGED);
+	}
+
+	if (!domain)
+		return -ENOMEM;
+
+	domain->ops = ops;
+	group->blocking_domain = domain;
+
+	return 0;
+}
+
+static void iommu_group_free_blocking_domain(struct iommu_group *group,
+					     struct device *dev)
+{
+	struct iommu_domain *domain = group->blocking_domain;
+
+	if (domain->type == IOMMU_DOMAIN_BLOCKED)
+		kfree(domain);
+	else
+		iommu_domain_free(domain);
+
+	group->blocking_domain = NULL;
+}
+
 /**
  * iommu_group_add_device - add a device to an iommu group
  * @group: the group into which to add the device (reference should be held)
@@ -866,6 +904,12 @@ int iommu_group_add_device(struct iommu_group *group, struct device *dev)
 {
 	int ret, i = 0;
 	struct group_device *device;
+
+	mutex_lock(&group->mutex);
+	ret = iommu_group_alloc_blocking_domain(group, dev);
+	mutex_unlock(&group->mutex);
+	if (ret)
+		return -ENODEV;
 
 	device = kzalloc(sizeof(*device), GFP_KERNEL);
 	if (!device)
@@ -961,6 +1005,8 @@ void iommu_group_remove_device(struct device *dev)
 			break;
 		}
 	}
+	if (list_empty(&group->devices))
+		iommu_group_free_blocking_domain(group, dev);
 	mutex_unlock(&group->mutex);
 
 	if (!device)
@@ -1961,12 +2007,16 @@ static void __iommu_group_set_core_domain(struct iommu_group *group)
 static int __iommu_attach_device(struct iommu_domain *domain,
 				 struct device *dev)
 {
+	const struct iommu_domain_ops *ops = domain->ops;
 	int ret;
 
-	if (unlikely(domain->ops->set_dev == NULL))
+	if (unlikely(ops->set_dev == NULL))
 		return -ENODEV;
 
-	ret = domain->ops->set_dev(domain, dev);
+	if (domain->type == IOMMU_DOMAIN_BLOCKED)
+		domain = iommu_get_domain_for_dev(dev);
+
+	ret = ops->set_dev(domain, dev);
 	if (!ret)
 		trace_attach_device_to_domain(dev);
 	return ret;
@@ -3146,29 +3196,6 @@ void iommu_device_unuse_default_domain(struct device *dev)
 	iommu_group_put(group);
 }
 
-static int __iommu_group_alloc_blocking_domain(struct iommu_group *group)
-{
-	struct group_device *dev =
-		list_first_entry(&group->devices, struct group_device, list);
-
-	if (group->blocking_domain)
-		return 0;
-
-	group->blocking_domain =
-		__iommu_domain_alloc(dev->dev->bus, IOMMU_DOMAIN_BLOCKED);
-	if (!group->blocking_domain) {
-		/*
-		 * For drivers that do not yet understand IOMMU_DOMAIN_BLOCKED
-		 * create an empty domain instead.
-		 */
-		group->blocking_domain = __iommu_domain_alloc(
-			dev->dev->bus, IOMMU_DOMAIN_UNMANAGED);
-		if (!group->blocking_domain)
-			return -EINVAL;
-	}
-	return 0;
-}
-
 /**
  * iommu_group_claim_dma_owner() - Set DMA ownership of a group
  * @group: The group.
@@ -3191,10 +3218,6 @@ int iommu_group_claim_dma_owner(struct iommu_group *group, void *owner)
 			ret = -EBUSY;
 			goto unlock_out;
 		}
-
-		ret = __iommu_group_alloc_blocking_domain(group);
-		if (ret)
-			goto unlock_out;
 
 		ret = __iommu_group_set_domain(group, group->blocking_domain);
 		if (ret)
