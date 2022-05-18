@@ -4,6 +4,8 @@
  */
 #include <linux/mutex.h>
 #include <linux/sched/mm.h>
+#include <linux/pci.h>
+#include <linux/pci-ats.h>
 
 #include "iommu-sva-lib.h"
 
@@ -117,3 +119,114 @@ int iommu_sva_set_domain(struct iommu_domain *domain, struct device *dev,
 
 	return iommu_set_device_pasid(domain, dev, pasid);
 }
+
+/**
+ * iommu_sva_bind_device() - Bind a process address space to a device
+ * @dev: the device
+ * @mm: the mm to bind, caller must hold a reference to mm_users
+ *
+ * Create a bond between device and address space, allowing the device to access
+ * the mm using the returned PASID. If a bond already exists between @device and
+ * @mm, it is returned and an additional reference is taken. Caller must call
+ * iommu_sva_unbind_device() to release each reference.
+ *
+ * iommu_dev_enable_feature(dev, IOMMU_DEV_FEAT_SVA) must be called first, to
+ * initialize the required SVA features.
+ *
+ * On error, returns an ERR_PTR value.
+ */
+struct iommu_sva *iommu_sva_bind_device(struct device *dev, struct mm_struct *mm)
+{
+	struct iommu_sva_domain *sva_domain;
+	struct iommu_domain *domain;
+	ioasid_t max_pasid = 0;
+	int ret = -EINVAL;
+
+	/* Allocate mm->pasid if necessary. */
+	if (!dev->iommu->iommu_dev->pasids)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	if (dev_is_pci(dev)) {
+		max_pasid = pci_max_pasids(to_pci_dev(dev));
+		if (max_pasid < 0)
+			return ERR_PTR(max_pasid);
+	} else {
+		ret = device_property_read_u32(dev, "pasid-num-bits",
+					       &max_pasid);
+		if (ret)
+			return ERR_PTR(ret);
+		max_pasid = (1UL << max_pasid);
+	}
+	max_pasid = min_t(u32, max_pasid, dev->iommu->iommu_dev->pasids);
+	ret = iommu_sva_alloc_pasid(mm, 1, max_pasid - 1);
+	if (ret)
+		return ERR_PTR(ret);
+
+	mutex_lock(&iommu_sva_lock);
+	/* Search for an existing domain. */
+	domain = iommu_get_domain_for_dev_pasid(dev, mm->pasid);
+	if (domain) {
+		sva_domain = to_sva_domain(domain);
+		refcount_inc(&sva_domain->bond.users);
+		goto out_success;
+	}
+
+	/* Allocate a new domain and set it on device pasid. */
+	domain = iommu_sva_alloc_domain(dev->bus, mm);
+	if (IS_ERR(domain)) {
+		ret = PTR_ERR(domain);
+		goto out_unlock;
+	}
+
+	ret = iommu_sva_set_domain(domain, dev, mm->pasid);
+	if (ret)
+		goto out_free_domain;
+	sva_domain = to_sva_domain(domain);
+	sva_domain->bond.dev = dev;
+	refcount_set(&sva_domain->bond.users, 1);
+
+out_success:
+	mutex_unlock(&iommu_sva_lock);
+	return &sva_domain->bond;
+
+out_free_domain:
+	iommu_sva_free_domain(domain);
+out_unlock:
+	mutex_unlock(&iommu_sva_lock);
+
+	return ERR_PTR(ret);
+}
+EXPORT_SYMBOL_GPL(iommu_sva_bind_device);
+
+/**
+ * iommu_sva_unbind_device() - Remove a bond created with iommu_sva_bind_device
+ * @handle: the handle returned by iommu_sva_bind_device()
+ *
+ * Put reference to a bond between device and address space. The device should
+ * not be issuing any more transaction for this PASID. All outstanding page
+ * requests for this PASID must have been flushed to the IOMMU.
+ */
+void iommu_sva_unbind_device(struct iommu_sva *handle)
+{
+	struct device *dev = handle->dev;
+	struct iommu_sva_domain *sva_domain =
+			container_of(handle, struct iommu_sva_domain, bond);
+	ioasid_t pasid = iommu_sva_get_pasid(handle);
+
+	mutex_lock(&iommu_sva_lock);
+	if (refcount_dec_and_test(&sva_domain->bond.users)) {
+		iommu_block_device_pasid(&sva_domain->domain, dev, pasid);
+		iommu_sva_free_domain(&sva_domain->domain);
+	}
+	mutex_unlock(&iommu_sva_lock);
+}
+EXPORT_SYMBOL_GPL(iommu_sva_unbind_device);
+
+u32 iommu_sva_get_pasid(struct iommu_sva *handle)
+{
+	struct iommu_sva_domain *sva_domain =
+			container_of(handle, struct iommu_sva_domain, bond);
+
+	return sva_domain->mm->pasid;
+}
+EXPORT_SYMBOL_GPL(iommu_sva_get_pasid);

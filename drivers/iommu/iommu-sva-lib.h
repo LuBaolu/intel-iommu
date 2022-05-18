@@ -20,6 +20,7 @@ struct iopf_queue;
 struct iommu_sva_domain {
 	struct iommu_domain	domain;
 	struct mm_struct	*mm;
+	struct iommu_sva	bond;
 };
 
 #define to_sva_domain(d) container_of_safe(d, struct iommu_sva_domain, domain)
