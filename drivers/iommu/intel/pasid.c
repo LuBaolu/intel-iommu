@@ -103,36 +103,20 @@ device_detach_pasid_table(struct device_domain_info *info,
 }
 
 struct pasid_table_opaque {
-	struct pasid_table	**pasid_table;
-	int			segment;
-	int			bus;
-	int			devfn;
+	struct pasid_table	*pasid_table;
 };
-
-static int search_pasid_table(struct device_domain_info *info, void *opaque)
-{
-	struct pasid_table_opaque *data = opaque;
-
-	if (info->iommu->segment == data->segment &&
-	    info->bus == data->bus &&
-	    info->devfn == data->devfn &&
-	    info->pasid_table) {
-		*data->pasid_table = info->pasid_table;
-		return 1;
-	}
-
-	return 0;
-}
 
 static int get_alias_pasid_table(struct pci_dev *pdev, u16 alias, void *opaque)
 {
 	struct pasid_table_opaque *data = opaque;
+	struct device_domain_info *info;
 
-	data->segment = pci_domain_nr(pdev->bus);
-	data->bus = PCI_BUS_NUM(alias);
-	data->devfn = alias & 0xff;
+	info = dev_iommu_priv_get(&pdev->dev);
+	if (!info || !info->pasid_table)
+		return 0;
 
-	return for_each_device_domain(&search_pasid_table, data);
+	data->pasid_table = info->pasid_table;
+	return 1;
 }
 
 /*
@@ -141,9 +125,9 @@ static int get_alias_pasid_table(struct pci_dev *pdev, u16 alias, void *opaque)
  */
 int intel_pasid_alloc_table(struct device *dev)
 {
+	struct pasid_table_opaque data = { NULL };
 	struct device_domain_info *info;
 	struct pasid_table *pasid_table;
-	struct pasid_table_opaque data;
 	struct page *pages;
 	u32 max_pasid = 0;
 	int ret, order;
@@ -155,11 +139,12 @@ int intel_pasid_alloc_table(struct device *dev)
 		return -EINVAL;
 
 	/* DMA alias device already has a pasid table, use it: */
-	data.pasid_table = &pasid_table;
 	ret = pci_for_each_dma_alias(to_pci_dev(dev),
 				     &get_alias_pasid_table, &data);
-	if (ret)
+	if (ret) {
+		pasid_table = data.pasid_table;
 		goto attach_out;
+	}
 
 	pasid_table = kzalloc(sizeof(*pasid_table), GFP_KERNEL);
 	if (!pasid_table)
