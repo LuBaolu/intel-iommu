@@ -342,15 +342,23 @@ static void pgtable_walk_level(struct seq_file *m, struct dma_pte *pde,
 	}
 }
 
-static int show_device_domain_translation(struct device *dev, void *data)
+struct show_domain_opaque {
+	struct device *dev;
+	struct seq_file *m;
+};
+
+static int __show_device_domain_translation(struct device *dev, void *data)
 {
-	struct device_domain_info *info = dev_iommu_priv_get(dev);
-	struct dmar_domain *domain = info->domain;
-	struct seq_file *m = data;
+	struct show_domain_opaque *opaque = data;
+	struct device_domain_info *info;
+	struct seq_file *m = opaque->m;
+	struct dmar_domain *domain;
 	u64 path[6] = { 0 };
 
-	if (!domain)
+	if (dev != opaque->dev)
 		return 0;
+	info = dev_iommu_priv_get(dev);
+	domain = info->domain;
 
 	seq_printf(m, "Device %s @0x%llx\n", dev_name(dev),
 		   (u64)virt_to_phys(domain->pgd));
@@ -359,20 +367,33 @@ static int show_device_domain_translation(struct device *dev, void *data)
 	pgtable_walk_level(m, domain->pgd, domain->agaw + 2, 0, path);
 	seq_putc(m, '\n');
 
+	return 1;
+}
+
+static int show_device_domain_translation(struct device *dev, void *data)
+{
+	struct show_domain_opaque opaque = {dev, data};
+	struct iommu_group *group;
+
+	group = iommu_group_get(dev);
+	if (group) {
+		/*
+		 * The group->mutex is held across the callback, which will
+		 * block calls to iommu_attach/detach_group/device. Hence,
+		 * the domain of the device will not change during traversal.
+		 */
+		iommu_group_for_each_dev(group, &opaque,
+					 __show_device_domain_translation);
+		iommu_group_put(group);
+	}
+
 	return 0;
 }
 
 static int domain_translation_struct_show(struct seq_file *m, void *unused)
 {
-	unsigned long flags;
-	int ret;
-
-	spin_lock_irqsave(&device_domain_lock, flags);
-	ret = bus_for_each_dev(&pci_bus_type, NULL, m,
-			       show_device_domain_translation);
-	spin_unlock_irqrestore(&device_domain_lock, flags);
-
-	return ret;
+	return bus_for_each_dev(&pci_bus_type, NULL, m,
+				show_device_domain_translation);
 }
 DEFINE_SHOW_ATTRIBUTE(domain_translation_struct);
 
