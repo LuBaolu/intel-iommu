@@ -1969,20 +1969,22 @@ EXPORT_SYMBOL_GPL(iommu_set_fault_handler);
 static struct iommu_domain *__iommu_domain_alloc(struct bus_type *bus,
 						 unsigned type)
 {
+	const struct iommu_ops *ops = bus ? bus->iommu_ops : NULL;
 	struct iommu_domain *domain;
 
-	if (bus == NULL || bus->iommu_ops == NULL)
+	if (!ops)
 		return NULL;
 
-	domain = bus->iommu_ops->domain_alloc(type);
+	domain = ops->domain_alloc(type);
 	if (!domain)
 		return NULL;
 
 	domain->type = type;
+	domain->owner = ops;
 	/* Assume all sizes by default; the driver may override this later */
-	domain->pgsize_bitmap = bus->iommu_ops->pgsize_bitmap;
+	domain->pgsize_bitmap = ops->pgsize_bitmap;
 	if (!domain->ops)
-		domain->ops = bus->iommu_ops->default_domain_ops;
+		domain->ops = ops->default_domain_ops;
 
 	if (iommu_is_dma_domain(domain) && iommu_get_dma_cookie(domain)) {
 		iommu_domain_free(domain);
@@ -2147,6 +2149,9 @@ struct iommu_domain *iommu_get_dma_domain(struct device *dev)
 static int iommu_group_do_attach_device(struct device *dev, void *data)
 {
 	struct iommu_domain *domain = data;
+
+	if (dev_iommu_ops(dev) != domain->owner)
+		return -EINVAL;
 
 	return __iommu_attach_device(domain, dev);
 }
