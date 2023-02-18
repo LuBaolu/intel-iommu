@@ -1683,6 +1683,31 @@ int arm_iommu_attach_device(struct device *dev,
 EXPORT_SYMBOL_GPL(arm_iommu_attach_device);
 
 /**
+ * arm_iommu_release_device
+ * @dev: valid struct device pointer
+ *
+ * This is like arm_iommu_detach_device() except it handles the special
+ * case of being called under an iommu driver's release operation. In this
+ * case the driver must have already detached the device from any attached
+ * domain before calling this function.
+ */
+void arm_iommu_release_device(struct device *dev)
+{
+	struct dma_iommu_mapping *mapping;
+
+	mapping = to_dma_iommu_mapping(dev);
+	if (!mapping) {
+		dev_warn(dev, "Not attached\n");
+		return;
+	}
+
+	kref_put(&mapping->kref, release_iommu_mapping);
+	to_dma_iommu_mapping(dev) = NULL;
+	set_dma_ops(dev, NULL);
+}
+EXPORT_SYMBOL_GPL(arm_iommu_release_device);
+
+/**
  * arm_iommu_detach_device
  * @dev: valid struct device pointer
  *
