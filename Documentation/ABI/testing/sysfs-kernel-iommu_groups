@@ -73,3 +73,17 @@ Description:    /sys/kernel/iommu_groups/ats shows the ATS status of devices
 		activated; "off": the iommu group contains devices that have
 		ATS supported but none of them activated; "unsupported": the
 		iommu group doesn't contain any device that has ATS supported.
+
+		Valid write values, "on": activate the ATS on devices; "off":
+		deactivate the ATS on devices. The ATS may be activated or
+		deactivated only when
+
+		- The device in the group is not bound to any device driver.
+		  So, the users must unbind the appropriate driver before
+		  changing the ATS.
+
+		Unbinding a device driver will take away the driver's control
+		over the device and if done on devices that host root file
+		system could lead to catastrophic effects (the users might
+		need to reboot the machine to get it to normal state). So, it's
+		expected that the users understand what they're doing.

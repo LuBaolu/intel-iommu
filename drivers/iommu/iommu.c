@@ -152,6 +152,26 @@ static const char *iommu_domain_type_str(unsigned int t)
 	}
 }
 
+static struct device *iommu_group_first_dev(struct iommu_group *group)
+{
+	lockdep_assert_held(&group->mutex);
+	return list_first_entry(&group->devices, struct group_device, list)->dev;
+}
+
+static int __iommu_group_for_each_dev(struct iommu_group *group, void *data,
+				      int (*fn)(struct device *, void *))
+{
+	struct group_device *device;
+	int ret = 0;
+
+	list_for_each_entry(device, &group->devices, list) {
+		ret = fn(device->dev, data);
+		if (ret)
+			break;
+	}
+	return ret;
+}
+
 static int __init iommu_subsys_init(void)
 {
 	struct notifier_block *nb;
@@ -823,6 +843,57 @@ static ssize_t iommu_group_show_ats(struct iommu_group *group, char *buf)
 	return strlen(ats_state);
 }
 
+static int iommu_group_do_activate_ats(struct device *dev, void *data)
+{
+	bool activate = *(bool *)data;
+
+	return activate ? iommu_dev_enable_feature(dev, IOMMU_DEV_FEAT_ATS) :
+			iommu_dev_disable_feature(dev, IOMMU_DEV_FEAT_ATS);
+}
+
+/*
+ * Support the activation and deactivation of ATS on the device through the
+ * sysfs node. This requires the users to unbind the drivers from the devices
+ * in the iommu group. Return failure if this isn't met.
+ *
+ * We need to consider the race between this and the device release path.
+ * group->mutex is used here to guarantee that the device release path
+ * will not be entered at the same time.
+ */
+static ssize_t iommu_group_store_ats(struct iommu_group *group,
+				     const char *buf, size_t count)
+{
+	struct device *dev;
+	bool activate;
+	int ret;
+
+	if (!capable(CAP_SYS_ADMIN) || !capable(CAP_SYS_RAWIO))
+		return -EACCES;
+
+	if (WARN_ON(!group))
+		return -EINVAL;
+
+	if (sysfs_streq(buf, "on"))
+		activate = 1;
+	else if (sysfs_streq(buf, "off"))
+		activate = 0;
+	else
+		return -EINVAL;
+
+	mutex_lock(&group->mutex);
+	dev = iommu_group_first_dev(group);
+	if (!dev || group->owner_cnt) {
+		mutex_unlock(&group->mutex);
+		return -EPERM;
+	}
+
+	ret = __iommu_group_for_each_dev(group, &activate,
+					 iommu_group_do_activate_ats);
+	mutex_unlock(&group->mutex);
+
+	return ret ?: count;
+}
+
 static IOMMU_GROUP_ATTR(name, S_IRUGO, iommu_group_show_name, NULL);
 
 static IOMMU_GROUP_ATTR(reserved_regions, 0444,
@@ -831,7 +902,7 @@ static IOMMU_GROUP_ATTR(reserved_regions, 0444,
 static IOMMU_GROUP_ATTR(type, 0644, iommu_group_show_type,
 			iommu_group_store_type);
 
-static IOMMU_GROUP_ATTR(ats, 0444, iommu_group_show_ats, NULL);
+static IOMMU_GROUP_ATTR(ats, 0644, iommu_group_show_ats, iommu_group_store_ats);
 
 static void iommu_group_release(struct kobject *kobj)
 {
@@ -1202,12 +1273,6 @@ void iommu_group_remove_device(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(iommu_group_remove_device);
 
-static struct device *iommu_group_first_dev(struct iommu_group *group)
-{
-	lockdep_assert_held(&group->mutex);
-	return list_first_entry(&group->devices, struct group_device, list)->dev;
-}
-
 static int iommu_group_device_count(struct iommu_group *group)
 {
 	struct group_device *entry;
@@ -1216,20 +1281,6 @@ static int iommu_group_device_count(struct iommu_group *group)
 	list_for_each_entry(entry, &group->devices, list)
 		ret++;
 
-	return ret;
-}
-
-static int __iommu_group_for_each_dev(struct iommu_group *group, void *data,
-				      int (*fn)(struct device *, void *))
-{
-	struct group_device *device;
-	int ret = 0;
-
-	list_for_each_entry(device, &group->devices, list) {
-		ret = fn(device->dev, data);
-		if (ret)
-			break;
-	}
 	return ret;
 }
 

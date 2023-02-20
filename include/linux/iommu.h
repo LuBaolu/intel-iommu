@@ -184,12 +184,14 @@ struct iommu_iort_rmr_data {
  *			 Faults themselves instead of relying on the IOMMU. When
  *			 supported, this feature must be enabled before and
  *			 disabled after %IOMMU_DEV_FEAT_SVA.
+ * @IOMMU_DEV_FEAT_ATS: Address Translation Service
  *
  * Device drivers enable a feature using iommu_dev_enable_feature().
  */
 enum iommu_dev_features {
 	IOMMU_DEV_FEAT_SVA,
 	IOMMU_DEV_FEAT_IOPF,
+	IOMMU_DEV_FEAT_ATS,
 };
 
 #define IOMMU_PASID_INVALID	(-1U)
