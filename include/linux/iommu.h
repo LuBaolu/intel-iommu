@@ -394,6 +394,10 @@ struct iommu_fault_param {
 	struct mutex lock;
 };
 
+#define IOMMU_DEV_ATS_NOTSUPP		0
+#define IOMMU_DEV_ATS_OFF		1
+#define IOMMU_DEV_ATS_ON		3
+
 /**
  * struct dev_iommu - Collection of per-device IOMMU data
  *
@@ -404,6 +408,10 @@ struct iommu_fault_param {
  * @priv:	 IOMMU Driver private data
  * @max_pasids:  number of PASIDs this device can consume
  * @attach_deferred: the dma domain attachment is deferred
+ * @ats_state: The state of ATS support:
+ *		IOMMU_DEV_ATS_NOTSUPP: ATS not supported
+ *		IOMMU_DEV_ATS_OFF: ATS supported but not activated
+ *		IOMMU_DEV_ATS_ON: ATS supported and activated
  *
  * TODO: migrate other per device data pointers under iommu_dev_data, e.g.
  *	struct iommu_group	*iommu_group;
@@ -417,6 +425,7 @@ struct dev_iommu {
 	void				*priv;
 	u32				max_pasids;
 	u32				attach_deferred:1;
+	u32				ats_state:2;
 };
 
 int iommu_device_register(struct iommu_device *iommu,

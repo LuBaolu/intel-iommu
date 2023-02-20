@@ -789,6 +789,40 @@ static ssize_t iommu_group_show_type(struct iommu_group *group,
 	return strlen(type);
 }
 
+static int iommu_group_check_ats(struct device *dev, void *data)
+{
+	*(int *)data |= dev->iommu->ats_state;
+
+	return 0;
+}
+
+static ssize_t iommu_group_show_ats(struct iommu_group *group, char *buf)
+{
+	char *ats_state;
+	int ats = 0;
+
+	iommu_group_for_each_dev(group, &ats, iommu_group_check_ats);
+
+	switch (ats) {
+	case IOMMU_DEV_ATS_NOTSUPP:
+		ats_state = "unsupported\n";
+		break;
+	case IOMMU_DEV_ATS_ON:
+		ats_state = "on\n";
+		break;
+	case IOMMU_DEV_ATS_OFF:
+		ats_state = "off\n";
+		break;
+	default:
+		ats_state = "unknown\n";
+		break;
+	}
+
+	strcpy(buf, ats_state);
+
+	return strlen(ats_state);
+}
+
 static IOMMU_GROUP_ATTR(name, S_IRUGO, iommu_group_show_name, NULL);
 
 static IOMMU_GROUP_ATTR(reserved_regions, 0444,
@@ -796,6 +830,8 @@ static IOMMU_GROUP_ATTR(reserved_regions, 0444,
 
 static IOMMU_GROUP_ATTR(type, 0644, iommu_group_show_type,
 			iommu_group_store_type);
+
+static IOMMU_GROUP_ATTR(ats, 0444, iommu_group_show_ats, NULL);
 
 static void iommu_group_release(struct kobject *kobj)
 {
@@ -877,20 +913,24 @@ struct iommu_group *iommu_group_alloc(void)
 
 	ret = iommu_group_create_file(group,
 				      &iommu_group_attr_reserved_regions);
-	if (ret) {
-		kobject_put(group->devices_kobj);
-		return ERR_PTR(ret);
-	}
+	if (ret)
+		goto err_putkobject;
 
 	ret = iommu_group_create_file(group, &iommu_group_attr_type);
-	if (ret) {
-		kobject_put(group->devices_kobj);
-		return ERR_PTR(ret);
-	}
+	if (ret)
+		goto err_putkobject;
+
+	ret = iommu_group_create_file(group, &iommu_group_attr_ats);
+	if (ret)
+		goto err_putkobject;
 
 	pr_debug("Allocated group %d\n", group->id);
 
 	return group;
+
+err_putkobject:
+	kobject_put(group->devices_kobj);
+	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL_GPL(iommu_group_alloc);
 

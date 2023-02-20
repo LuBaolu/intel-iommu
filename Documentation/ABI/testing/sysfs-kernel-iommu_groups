@@ -62,3 +62,14 @@ Description:	/sys/kernel/iommu_groups/<grp_id>/type shows the type of default
 		system could lead to catastrophic effects (the users might
 		need to reboot the machine to get it to normal state). So, it's
 		expected that the users understand what they're doing.
+
+What:		/sys/kernel/iommu_groups/ats
+Date: 		February 2023
+KernelVersion:  v6.4
+Contact: 	Lu Baolu <baolu.lu@linux.intel.com>
+Description:    /sys/kernel/iommu_groups/ats shows the ATS status of devices
+		sitting in this iommu group. Possible read values, "on": the
+		iommu group contains devices that have ATS supported and
+		activated; "off": the iommu group contains devices that have
+		ATS supported but none of them activated; "unsupported": the
+		iommu group doesn't contain any device that has ATS supported.
