@@ -279,6 +279,8 @@ static LIST_HEAD(dmar_satc_units);
 
 static void device_block_translation(struct device *dev);
 static void intel_iommu_domain_free(struct iommu_domain *domain);
+static int intel_iommu_enable_ats(struct device *dev);
+static int intel_iommu_disable_ats(struct device *dev);
 
 int dmar_disabled = !IS_ENABLED(CONFIG_INTEL_IOMMU_DEFAULT_ON);
 int intel_iommu_sm = IS_ENABLED(CONFIG_INTEL_IOMMU_SCALABLE_MODE_DEFAULT_ON);
@@ -1398,51 +1400,6 @@ static bool dev_needs_extra_dtlb_flush(struct pci_dev *pdev)
 	return true;
 }
 
-static void iommu_enable_pci_caps(struct device_domain_info *info)
-{
-	struct pci_dev *pdev;
-
-	if (!dev_is_pci(info->dev))
-		return;
-
-	pdev = to_pci_dev(info->dev);
-
-	/* The PCIe spec, in its wisdom, declares that the behaviour of
-	   the device if you enable PASID support after ATS support is
-	   undefined. So always enable PASID support on devices which
-	   have it, even if we can't yet know if we're ever going to
-	   use it. */
-	if (info->pasid_supported && !pci_enable_pasid(pdev, info->pasid_supported & ~1))
-		info->pasid_enabled = 1;
-
-	if (info->ats_supported && pci_ats_page_aligned(pdev) &&
-	    !pci_enable_ats(pdev, VTD_PAGE_SHIFT)) {
-		info->ats_enabled = 1;
-		domain_update_iotlb(info->domain);
-	}
-}
-
-static void iommu_disable_pci_caps(struct device_domain_info *info)
-{
-	struct pci_dev *pdev;
-
-	if (!dev_is_pci(info->dev))
-		return;
-
-	pdev = to_pci_dev(info->dev);
-
-	if (info->ats_enabled) {
-		pci_disable_ats(pdev);
-		info->ats_enabled = 0;
-		domain_update_iotlb(info->domain);
-	}
-
-	if (info->pasid_enabled) {
-		pci_disable_pasid(pdev);
-		info->pasid_enabled = 0;
-	}
-}
-
 static void __iommu_flush_dev_iotlb(struct device_domain_info *info,
 				    u64 addr, unsigned int mask)
 {
@@ -2456,7 +2413,7 @@ static int dmar_domain_attach_device(struct dmar_domain *domain,
 		return ret;
 	}
 
-	iommu_enable_pci_caps(info);
+	intel_iommu_enable_ats(dev);
 
 	return 0;
 }
@@ -4061,7 +4018,7 @@ static void dmar_remove_one_dev_info(struct device *dev)
 			intel_pasid_tear_down_entry(iommu, info->dev,
 					PASID_RID2PASID, false);
 
-		iommu_disable_pci_caps(info);
+		intel_iommu_disable_ats(dev);
 		domain_context_clear(info);
 	}
 
@@ -4084,7 +4041,7 @@ static void device_block_translation(struct device *dev)
 	struct intel_iommu *iommu = info->iommu;
 	unsigned long flags;
 
-	iommu_disable_pci_caps(info);
+	intel_iommu_disable_ats(dev);
 	if (!dev_is_real_dma_subdevice(dev)) {
 		if (sm_supported(iommu))
 			intel_pasid_tear_down_entry(iommu, dev,
@@ -4535,6 +4492,67 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 	}
 
 	return &iommu->iommu;
+}
+
+static int intel_iommu_enable_ats(struct device *dev)
+{
+	struct pci_dev *pdev = dev_is_pci(dev) ? to_pci_dev(dev) : NULL;
+	struct device_domain_info *info = dev_iommu_priv_get(dev);
+	int ret;
+
+	if (!pdev || !info || !info->ats_supported || !pci_ats_page_aligned(pdev))
+		return -ENODEV;
+
+	if (info->ats_enabled)
+		return -EBUSY;
+
+	/*
+	 * The PCIe spec, in its wisdom, declares that the behaviour of the
+	 * device if you enable PASID support after ATS support is undefined.
+	 * So always enable PASID support on devices which have it, even if
+	 * we can't yet know if we're ever going to use it.
+	 */
+	if (info->pasid_supported) {
+		ret = pci_enable_pasid(pdev, info->pasid_supported & ~1);
+		if (ret)
+			return ret;
+		info->pasid_enabled = 1;
+	}
+
+	ret = pci_enable_ats(pdev, VTD_PAGE_SHIFT);
+	if (ret)
+		goto disable_pasid;
+
+	info->ats_enabled = 1;
+	domain_update_iotlb(info->domain);
+
+	return 0;
+
+disable_pasid:
+	pci_disable_pasid(pdev);
+	info->pasid_enabled = 0;
+
+	return ret;
+}
+
+static int intel_iommu_disable_ats(struct device *dev)
+{
+	struct pci_dev *pdev = dev_is_pci(dev) ? to_pci_dev(dev) : NULL;
+	struct device_domain_info *info = dev_iommu_priv_get(dev);
+
+	if (!info || !pdev || !info->ats_enabled)
+		return -ENODEV;
+
+	pci_disable_ats(pdev);
+	info->ats_enabled = 0;
+	domain_update_iotlb(info->domain);
+
+	if (info->pasid_enabled) {
+		pci_disable_pasid(pdev);
+		info->pasid_enabled = 0;
+	}
+
+	return 0;
 }
 
 static void intel_iommu_release_device(struct device *dev)
