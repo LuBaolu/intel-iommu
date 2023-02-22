@@ -4450,6 +4450,7 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 		    pci_ats_supported(pdev) &&
 		    dmar_ats_supported(pdev, iommu)) {
 			info->ats_supported = 1;
+			dev->iommu->ats_state = IOMMU_DEV_ATS_OFF;
 			info->dtlb_extra_inval = dev_needs_extra_dtlb_flush(pdev);
 
 			/*
@@ -4590,6 +4591,7 @@ static int intel_iommu_enable_ats(struct device *dev)
 		goto disable_pasid;
 
 	info->ats_enabled = 1;
+	dev->iommu->ats_state = IOMMU_DEV_ATS_ON;
 	domain_update_iotlb(info->domain);
 
 	return 0;
@@ -4613,6 +4615,7 @@ static int intel_iommu_disable_ats(struct device *dev)
 
 	pci_disable_ats(pdev);
 	info->ats_enabled = 0;
+	dev->iommu->ats_state = IOMMU_DEV_ATS_OFF;
 	domain_update_iotlb(info->domain);
 
 	if (info->pasid_enabled) {
@@ -4830,6 +4833,9 @@ intel_iommu_dev_enable_feat(struct device *dev, enum iommu_dev_features feat)
 	case IOMMU_DEV_FEAT_SVA:
 		return intel_iommu_enable_sva(dev);
 
+	case IOMMU_DEV_FEAT_ATS:
+		return intel_iommu_enable_ats(dev);
+
 	default:
 		return -ENODEV;
 	}
@@ -4844,6 +4850,9 @@ intel_iommu_dev_disable_feat(struct device *dev, enum iommu_dev_features feat)
 
 	case IOMMU_DEV_FEAT_SVA:
 		return 0;
+
+	case IOMMU_DEV_FEAT_ATS:
+		return intel_iommu_disable_ats(dev);
 
 	default:
 		return -ENODEV;
