@@ -273,7 +273,7 @@ get_md_pagetable(struct iommufd_ucmd *ucmd, u32 mockpt_id,
 static int iommufd_test_mock_domain(struct iommufd_ucmd *ucmd,
 				    struct iommu_test_cmd *cmd)
 {
-	static struct bus_type mock_bus = { .iommu_ops = &mock_ops };
+	static struct bus_type mock_bus;
 	struct iommufd_hw_pagetable *hwpt;
 	struct selftest_obj *sobj;
 	struct iommufd_ioas *ioas;
