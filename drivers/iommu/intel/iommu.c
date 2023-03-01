@@ -279,8 +279,6 @@ static LIST_HEAD(dmar_satc_units);
 
 static void device_block_translation(struct device *dev);
 static void intel_iommu_domain_free(struct iommu_domain *domain);
-static int intel_iommu_enable_ats(struct device *dev);
-static int intel_iommu_disable_ats(struct device *dev);
 
 int dmar_disabled = !IS_ENABLED(CONFIG_INTEL_IOMMU_DEFAULT_ON);
 int intel_iommu_sm = IS_ENABLED(CONFIG_INTEL_IOMMU_SCALABLE_MODE_DEFAULT_ON);
@@ -1830,6 +1828,11 @@ static inline void context_set_sm_dte(struct context_entry *context)
 	context->lo |= (1 << 2);
 }
 
+static inline void context_clear_sm_dte(struct context_entry *context)
+{
+	context->lo &= ~BIT_ULL(2);
+}
+
 /*
  * Set the PRE(Page Request Enable) field of a scalable mode context
  * entry.
@@ -1917,7 +1920,7 @@ static int domain_context_mapping_one(struct dmar_domain *domain,
 		 * Setup the Device-TLB enable bit and Page request
 		 * Enable bit:
 		 */
-		if (info && info->ats_supported)
+		if (info && info->ats_enabled)
 			context_set_sm_dte(context);
 		if (info && info->pri_supported)
 			context_set_sm_pre(context);
@@ -1941,7 +1944,7 @@ static int domain_context_mapping_one(struct dmar_domain *domain,
 					goto out_unlock;
 			}
 
-			if (info && info->ats_supported)
+			if (info && info->ats_enabled)
 				translation = CONTEXT_TT_DEV_IOTLB;
 			else
 				translation = CONTEXT_TT_MULTI_LEVEL;
@@ -2412,8 +2415,6 @@ static int dmar_domain_attach_device(struct dmar_domain *domain,
 		device_block_translation(dev);
 		return ret;
 	}
-
-	intel_iommu_enable_ats(dev);
 
 	return 0;
 }
@@ -4017,8 +4018,6 @@ static void dmar_remove_one_dev_info(struct device *dev)
 		if (dev_is_pci(info->dev) && sm_supported(iommu))
 			intel_pasid_tear_down_entry(iommu, info->dev,
 					PASID_RID2PASID, false);
-
-		intel_iommu_disable_ats(dev);
 		domain_context_clear(info);
 	}
 
@@ -4041,7 +4040,6 @@ static void device_block_translation(struct device *dev)
 	struct intel_iommu *iommu = info->iommu;
 	unsigned long flags;
 
-	intel_iommu_disable_ats(dev);
 	if (!dev_is_real_dma_subdevice(dev)) {
 		if (sm_supported(iommu))
 			intel_pasid_tear_down_entry(iommu, dev,
@@ -4494,6 +4492,70 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 	return &iommu->iommu;
 }
 
+/*
+ * Invalidate the caches for a present-to-present change in a context
+ * table entry according to the Spec 6.5.3.3 (Guidance to Software for
+ * Invalidations).
+ *
+ * Since context entry is not encoded by domain-id when operating in
+ * scalable-mode (refer Section 6.2.1), this performs coarser
+ * invalidation than the domain-selective granularity requested.
+ */
+static void invalidate_present_context_change(struct device_domain_info *info)
+{
+	struct intel_iommu *iommu = info->iommu;
+
+	iommu->flush.flush_context(iommu, 0, 0, 0, DMA_CCMD_GLOBAL_INVL);
+	if (sm_supported(iommu))
+		qi_flush_pasid_cache(iommu, 0, QI_PC_GLOBAL, 0);
+        iommu->flush.flush_iotlb(iommu, 0, 0, 0, DMA_TLB_GLOBAL_FLUSH);
+	__iommu_flush_dev_iotlb(info, 0, MAX_AGAW_PFN_WIDTH);
+}
+
+static int intel_iommu_setup_ats(struct device_domain_info *info)
+{
+	struct intel_iommu *iommu = info->iommu;
+	u8 bus = info->bus, devfn = info->devfn;
+	struct context_entry *context;
+
+	context = iommu_context_addr(iommu, bus, devfn, 0);
+	if (!context || !context_present(context) ||
+	    context_copied(iommu, bus, devfn))
+		return -ENODEV;
+
+	/*
+	 * Context entry and scalable-mode context entry both use bit 2 for
+	 * device TLB controlling.
+	 */
+	context_set_sm_dte(context);
+
+	if (!ecap_coherent(iommu->ecap))
+		clflush_cache_range(context, sizeof(*context));
+
+	invalidate_present_context_change(info);
+
+	return 0;
+}
+
+static void intel_iommu_teardown_ats(struct device_domain_info *info)
+{
+	struct intel_iommu *iommu = info->iommu;
+	u8 bus = info->bus, devfn = info->devfn;
+	struct context_entry *context;
+
+	context = iommu_context_addr(iommu, bus, devfn, 0);
+	if (WARN_ON(!context || !context_present(context) ||
+		    context_copied(iommu, bus, devfn)))
+		return;
+
+	context_clear_sm_dte(context);
+
+	if (!ecap_coherent(iommu->ecap))
+		clflush_cache_range(context, sizeof(*context));
+
+	invalidate_present_context_change(info);
+}
+
 static int intel_iommu_enable_ats(struct device *dev)
 {
 	struct pci_dev *pdev = dev_is_pci(dev) ? to_pci_dev(dev) : NULL;
@@ -4506,6 +4568,10 @@ static int intel_iommu_enable_ats(struct device *dev)
 	if (info->ats_enabled)
 		return -EBUSY;
 
+	ret = intel_iommu_setup_ats(info);
+	if (ret)
+		return ret;
+
 	/*
 	 * The PCIe spec, in its wisdom, declares that the behaviour of the
 	 * device if you enable PASID support after ATS support is undefined.
@@ -4515,7 +4581,7 @@ static int intel_iommu_enable_ats(struct device *dev)
 	if (info->pasid_supported) {
 		ret = pci_enable_pasid(pdev, info->pasid_supported & ~1);
 		if (ret)
-			return ret;
+			goto clear_context;
 		info->pasid_enabled = 1;
 	}
 
@@ -4531,6 +4597,8 @@ static int intel_iommu_enable_ats(struct device *dev)
 disable_pasid:
 	pci_disable_pasid(pdev);
 	info->pasid_enabled = 0;
+clear_context:
+	intel_iommu_teardown_ats(info);
 
 	return ret;
 }
@@ -4552,6 +4620,8 @@ static int intel_iommu_disable_ats(struct device *dev)
 		info->pasid_enabled = 0;
 	}
 
+	intel_iommu_teardown_ats(info);
+
 	return 0;
 }
 
@@ -4559,6 +4629,8 @@ static void intel_iommu_release_device(struct device *dev)
 {
 	struct device_domain_info *info = dev_iommu_priv_get(dev);
 
+	if (info->ats_enabled)
+		intel_iommu_disable_ats(dev);
 	dmar_remove_one_dev_info(dev);
 	intel_pasid_free_table(dev);
 	dev_iommu_priv_set(dev, NULL);
@@ -4568,6 +4640,15 @@ static void intel_iommu_release_device(struct device *dev)
 
 static void intel_iommu_probe_finalize(struct device *dev)
 {
+	struct device_domain_info *info = dev_iommu_priv_get(dev);
+	int ret;
+
+	if (info->ats_supported && !info->ats_enabled) {
+		ret = intel_iommu_enable_ats(dev);
+		if (!ret)
+			dev_info(dev, "device TLB activated\n");
+	}
+
 	set_dma_ops(dev, NULL);
 	iommu_setup_dma_ops(dev, 0, U64_MAX);
 }
