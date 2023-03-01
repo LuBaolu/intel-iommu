@@ -102,6 +102,7 @@ static int iommu_create_device_direct_mappings(struct iommu_group *group,
 static struct iommu_group *iommu_group_get_for_dev(struct device *dev);
 static ssize_t iommu_group_store_type(struct iommu_group *group,
 				      const char *buf, size_t count);
+static int iommu_group_do_probe_finalize(struct device *dev, void *data);
 
 #define IOMMU_GROUP_ATTR(_name, _mode, _show, _store)		\
 struct iommu_group_attribute iommu_group_attr_##_name =		\
@@ -430,7 +431,6 @@ static int iommu_group_do_dma_first_attach(struct device *dev, void *data)
 
 int iommu_probe_device(struct device *dev)
 {
-	const struct iommu_ops *ops;
 	struct iommu_group *group;
 	int ret;
 
@@ -471,9 +471,7 @@ int iommu_probe_device(struct device *dev)
 	mutex_unlock(&group->mutex);
 	iommu_group_put(group);
 
-	ops = dev_iommu_ops(dev);
-	if (ops->probe_finalize)
-		ops->probe_finalize(dev);
+	iommu_group_do_probe_finalize(dev, NULL);
 
 	return 0;
 
@@ -535,6 +533,9 @@ void iommu_release_device(struct device *dev)
 		return;
 
 	iommu_device_unlink(dev->iommu->iommu_dev, dev);
+
+	if (dev->iommu->ats_state == IOMMU_DEV_ATS_ON)
+		iommu_dev_disable_feature(dev, IOMMU_DEV_FEAT_ATS);
 
 	mutex_lock(&group->mutex);
 	device = __iommu_group_remove_device(group, dev);
@@ -1964,6 +1965,13 @@ static int __iommu_group_dma_first_attach(struct iommu_group *group)
 static int iommu_group_do_probe_finalize(struct device *dev, void *data)
 {
 	const struct iommu_ops *ops = dev_iommu_ops(dev);
+
+	/*
+	 * Enable device TLB if it is supported but not activated. This is
+	 * an optional operation, hence the return value is just ignored.
+	 */
+	if (dev->iommu->ats_state == IOMMU_DEV_ATS_OFF)
+		iommu_dev_enable_feature(dev, IOMMU_DEV_FEAT_ATS);
 
 	if (ops->probe_finalize)
 		ops->probe_finalize(dev);

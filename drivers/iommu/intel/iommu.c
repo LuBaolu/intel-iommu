@@ -4632,8 +4632,6 @@ static void intel_iommu_release_device(struct device *dev)
 {
 	struct device_domain_info *info = dev_iommu_priv_get(dev);
 
-	if (info->ats_enabled)
-		intel_iommu_disable_ats(dev);
 	dmar_remove_one_dev_info(dev);
 	intel_pasid_free_table(dev);
 	dev_iommu_priv_set(dev, NULL);
@@ -4643,15 +4641,6 @@ static void intel_iommu_release_device(struct device *dev)
 
 static void intel_iommu_probe_finalize(struct device *dev)
 {
-	struct device_domain_info *info = dev_iommu_priv_get(dev);
-	int ret;
-
-	if (info->ats_supported && !info->ats_enabled) {
-		ret = intel_iommu_enable_ats(dev);
-		if (!ret)
-			dev_info(dev, "device TLB activated\n");
-	}
-
 	set_dma_ops(dev, NULL);
 	iommu_setup_dma_ops(dev, 0, U64_MAX);
 }
