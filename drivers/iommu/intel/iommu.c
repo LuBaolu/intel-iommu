@@ -4000,8 +4000,12 @@ int __init intel_iommu_init(void)
 
 	init_iommu_pm_ops();
 
-	down_read(&dmar_global_lock);
-	for_each_active_iommu(iommu, drhd) {
+	list_for_each_entry(drhd, &static_drhd_units, slist) {
+		if (drhd->ignored)
+			continue;
+
+		iommu = drhd->iommu;
+
 		/*
 		 * The flush queue implementation does not perform
 		 * page-selective invalidations that are required for efficient
@@ -4021,7 +4025,6 @@ int __init intel_iommu_init(void)
 
 		iommu_pmu_register(iommu);
 	}
-	up_read(&dmar_global_lock);
 
 	if (si_domain && !hw_pass_through)
 		register_memory_notifier(&intel_iommu_memory_nb);

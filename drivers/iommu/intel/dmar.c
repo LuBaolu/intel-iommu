@@ -59,6 +59,12 @@ struct dmar_res_callback {
 DECLARE_RWSEM(dmar_global_lock);
 LIST_HEAD(dmar_drhd_units);
 
+/*
+ * The static list for all drhd units. It's static during the system lifecycle.
+ * Hence, no lock is needed for access.
+ */
+LIST_HEAD(static_drhd_units);
+
 struct acpi_table_header * __initdata dmar_tbl;
 static int dmar_dev_scope_status = 1;
 static DEFINE_IDA(dmar_seq_ids);
@@ -628,6 +634,36 @@ static inline int dmar_walk_dmar_table(struct acpi_table_dmar *dmar,
 			dmar->header.length - sizeof(*dmar), cb);
 }
 
+/*
+ * dmar_parse_static_drhd - parses a DMA remapping hardware definition
+ * structure reported in static ACPI/DMAR table.
+ */
+static int __init dmar_parse_static_drhd(struct acpi_dmar_header *header,
+					 void *arg)
+{
+	struct dmar_drhd_unit *drhd;
+	int ret;
+
+	ret = dmar_parse_one_drhd(header, arg);
+	if (ret)
+		return ret;
+
+	drhd = dmar_find_dmaru((struct acpi_dmar_hardware_unit *)header);
+	if (!drhd)
+		return -ENODEV;
+
+	/*
+	 * Add INCLUDE_ALL at the tail, so scan the list will find it at
+	 * the very end.
+	 */
+	if (drhd->include_all)
+		list_add_tail(&drhd->slist, &static_drhd_units);
+	else
+		list_add(&drhd->slist, &static_drhd_units);
+
+	return 0;
+}
+
 /**
  * parse_dmar_table - parses the DMA reporting table
  */
@@ -641,7 +677,7 @@ parse_dmar_table(void)
 		.print_entry = true,
 		.ignore_unhandled = true,
 		.arg[ACPI_DMAR_TYPE_HARDWARE_UNIT] = &drhd_count,
-		.cb[ACPI_DMAR_TYPE_HARDWARE_UNIT] = &dmar_parse_one_drhd,
+		.cb[ACPI_DMAR_TYPE_HARDWARE_UNIT] = &dmar_parse_static_drhd,
 		.cb[ACPI_DMAR_TYPE_RESERVED_MEMORY] = &dmar_parse_one_rmrr,
 		.cb[ACPI_DMAR_TYPE_ROOT_ATS] = &dmar_parse_one_atsr,
 		.cb[ACPI_DMAR_TYPE_HARDWARE_AFFINITY] = &dmar_parse_one_rhsa,
