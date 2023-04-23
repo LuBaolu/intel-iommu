@@ -1940,12 +1940,53 @@ void dmar_msi_read(int irq, struct msi_msg *msg)
 	raw_spin_unlock_irqrestore(&iommu->register_lock, flag);
 }
 
+// TODO: filter out all DMA remapping faults
+static int dmar_report_one_dma_fault(struct intel_iommu *iommu, u16 rid,
+				     u8 reason, bool read, u32 pasid,
+				     unsigned long long addr)
+{
+	struct iommu_fault_event event;
+	struct pci_dev *pdev;
+	int ret;
+
+	pdev = pci_get_domain_bus_and_slot(iommu->segment, PCI_BUS_NUM(rid),
+					   rid & 0xff);
+	if (!pdev)
+		return -ENODEV;
+
+	memset(&event, 0, sizeof(struct iommu_fault_event));
+	event.fault.type = IOMMU_FAULT_DMA_UNRECOV;
+	event.fault.event.reason = reason;
+	event.fault.event.perm = read ?
+		IOMMU_FAULT_PERM_READ : IOMMU_FAULT_PERM_WRITE;
+	event.fault.event.addr = addr;
+	event.fault.event.flags |= IOMMU_FAULT_UNRECOV_ADDR_VALID;
+	if (pasid_valid(pasid)) {
+		event.fault.event.pasid = pasid;
+		event.fault.event.flags |= IOMMU_FAULT_UNRECOV_PASID_VALID;
+	}
+
+	ret = iommu_report_device_fault(&pdev->dev, &event);
+	pci_dev_put(pdev);
+
+	return ret;
+}
+
 static int dmar_fault_do_one(struct intel_iommu *iommu, int type,
 		u8 fault_reason, u32 pasid, u16 source_id,
 		unsigned long long addr)
 {
 	const char *reason;
 	int fault_type;
+
+	/*
+	 * Report the DMA fault to the external world in case any fault
+	 * handler has been installed for the hw page table. Otherwise,
+	 * dump a fault message in the kernel log.
+	 */
+	if (!dmar_report_one_dma_fault(iommu, source_id, fault_reason,
+				       type, pasid, addr))
+		return 0;
 
 	reason = dmar_get_fault_reason(fault_reason, &fault_type);
 
