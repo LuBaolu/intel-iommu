@@ -97,6 +97,10 @@ struct iommu_domain {
 	unsigned long pgsize_bitmap;	/* Bitmap of page sizes in use */
 	struct iommu_domain_geometry geometry;
 	struct iommu_dma_cookie *iova_cookie;
+
+	int (*dmaf_handler)(struct iommu_fault *fault, void *data);
+	void *dmaf_data;
+
 	enum iommu_page_response_code (*iopf_handler)(struct iommu_fault *fault,
 						      void *data);
 	void *fault_data;
@@ -522,6 +526,7 @@ extern int iommu_report_device_fault(struct device *dev,
 				     struct iommu_fault_event *evt);
 extern int iommu_page_response(struct device *dev,
 			       struct iommu_page_response *msg);
+int iommu_device_fault_handler(struct iommu_fault *fault, void *cookie);
 
 extern int iommu_group_id(struct iommu_group *group);
 extern struct iommu_domain *iommu_group_default_domain(struct iommu_group *);
@@ -919,6 +924,12 @@ int iommu_report_device_fault(struct device *dev, struct iommu_fault_event *evt)
 
 static inline int iommu_page_response(struct device *dev,
 				      struct iommu_page_response *msg)
+{
+	return -ENODEV;
+}
+
+static inline int iommu_device_fault_handler(struct iommu_fault *fault,
+					     void *cookie)
 {
 	return -ENODEV;
 }

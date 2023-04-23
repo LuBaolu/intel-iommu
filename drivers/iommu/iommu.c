@@ -1428,6 +1428,42 @@ done_unlock:
 }
 EXPORT_SYMBOL_GPL(iommu_page_response);
 
+static int iommu_handle_unrecoverable_fault(struct device *dev,
+					    struct iommu_fault *fault)
+{
+	ioasid_t pasid = fault->prm.pasid;
+	struct iommu_domain *domain;
+
+	if (pasid)
+		domain = iommu_get_domain_for_dev_pasid(dev, pasid, 0);
+	else
+		domain = iommu_get_domain_for_dev(dev);
+
+	if (!domain || !domain->dmaf_handler)
+		return -ENODEV;
+
+	return domain->iopf_handler(fault, domain->dmaf_data);
+}
+
+int iommu_device_fault_handler(struct iommu_fault *fault, void *cookie)
+{
+	struct device *dev = cookie;
+
+	switch (fault->type) {
+	case IOMMU_FAULT_PAGE_REQ:
+		return iommu_queue_iopf(fault, cookie);
+
+	case IOMMU_FAULT_DMA_UNRECOV:
+		return iommu_handle_unrecoverable_fault(dev, fault);
+
+	default:
+		dev_warn_ratelimited(dev,
+				     "unknown fault type %d\n", fault->type);
+	}
+
+	return -EOPNOTSUPP;
+}
+
 /**
  * iommu_group_id - Return ID for a group
  * @group: the group to ID
