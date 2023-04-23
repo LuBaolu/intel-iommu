@@ -2074,7 +2074,8 @@ int dmar_set_interrupt(struct intel_iommu *iommu)
 		return -EINVAL;
 	}
 
-	ret = request_irq(irq, dmar_fault, IRQF_NO_THREAD, iommu->name, iommu);
+	ret = request_threaded_irq(irq, NULL, dmar_fault, IRQF_ONESHOT,
+				   iommu->name, iommu);
 	if (ret)
 		pr_err("Can't request irq\n");
 	return ret;
