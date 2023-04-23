@@ -4437,6 +4437,13 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 			    pci_pri_supported(pdev))
 				info->pri_supported = 1;
 		}
+
+		ret = iommu_register_device_fault_handler(dev,
+				iommu_device_fault_handler, dev);
+		if (ret) {
+			dev_err(dev, "fault handler registeration failed\n");
+			goto err_free;
+		}
 	}
 
 	dev_iommu_priv_set(dev, info);
@@ -4445,13 +4452,17 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 		ret = intel_pasid_alloc_table(dev);
 		if (ret) {
 			dev_err(dev, "PASID table allocation failed\n");
-			dev_iommu_priv_set(dev, NULL);
-			kfree(info);
-			return ERR_PTR(ret);
+			goto err_unregister;
 		}
 	}
 
 	return &iommu->iommu;
+err_unregister:
+	dev_iommu_priv_set(dev, NULL);
+	iommu_unregister_device_fault_handler(dev);
+err_free:
+	kfree(info);
+	return ERR_PTR(ret);
 }
 
 static void intel_iommu_release_device(struct device *dev)
@@ -4461,6 +4472,7 @@ static void intel_iommu_release_device(struct device *dev)
 	dmar_remove_one_dev_info(dev);
 	intel_pasid_free_table(dev);
 	dev_iommu_priv_set(dev, NULL);
+	iommu_unregister_device_fault_handler(dev);
 	kfree(info);
 	set_dma_ops(dev, NULL);
 }
@@ -4601,19 +4613,14 @@ static int intel_iommu_enable_iopf(struct device *dev)
 	if (ret)
 		return ret;
 
-	ret = iommu_register_device_fault_handler(dev, iommu_queue_iopf, dev);
+	ret = pci_enable_pri(pdev, PRQ_DEPTH);
 	if (ret)
 		goto iopf_remove_device;
 
-	ret = pci_enable_pri(pdev, PRQ_DEPTH);
-	if (ret)
-		goto iopf_unregister_handler;
 	info->pri_enabled = 1;
 
 	return 0;
 
-iopf_unregister_handler:
-	iommu_unregister_device_fault_handler(dev);
 iopf_remove_device:
 	iopf_queue_remove_device(iommu->iopf_queue, dev);
 
@@ -4640,11 +4647,9 @@ static int intel_iommu_disable_iopf(struct device *dev)
 	info->pri_enabled = 0;
 
 	/*
-	 * With PRI disabled and outstanding PRQs drained, unregistering
-	 * fault handler and removing device from iopf queue should never
-	 * fail.
+	 * With PRI disabled and outstanding PRQs drained, removing device
+	 * from iopf queue should never fail.
 	 */
-	WARN_ON(iommu_unregister_device_fault_handler(dev));
 	WARN_ON(iopf_queue_remove_device(iommu->iopf_queue, dev));
 
 	return 0;
