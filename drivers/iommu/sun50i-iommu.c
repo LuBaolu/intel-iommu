@@ -805,6 +805,10 @@ static struct iommu_device *sun50i_iommu_probe_device(struct device *dev)
 	if (!iommu)
 		return ERR_PTR(-ENODEV);
 
+	/* No release callback? Probably platform driver's remove callback? */
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return &iommu->iommu;
 }
 
@@ -848,6 +852,8 @@ static void sun50i_iommu_report_fault(struct sun50i_iommu *iommu,
 				      unsigned master, phys_addr_t iova,
 				      unsigned prot)
 {
+	struct iommu_fault_event event;
+
 	dev_err(iommu->dev, "Page fault for %pad (master %d, dir %s)\n",
 		&iova, master, (prot == IOMMU_FAULT_WRITE) ? "wr" : "rd");
 
@@ -855,6 +861,10 @@ static void sun50i_iommu_report_fault(struct sun50i_iommu *iommu,
 		report_iommu_fault(iommu->domain, iommu->dev, iova, prot);
 	else
 		dev_err(iommu->dev, "Page fault while iommu not attached to any domain?\n");
+
+	iommu_fill_unrecoverable_dma_fault(&event, prot == IOMMU_FAULT_WRITE, iova);
+	/* Is this the right device? */
+	iommu_report_device_fault(iommu->dev, &event);
 
 	sun50i_iommu_zap_range(iommu, iova, SPAGE_SIZE);
 }
