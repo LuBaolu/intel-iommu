@@ -544,6 +544,7 @@ static void amd_iommu_report_page_fault(struct amd_iommu *iommu,
 					u64 address, int flags)
 {
 	struct iommu_dev_data *dev_data = NULL;
+	struct iommu_fault_event event;
 	struct pci_dev *pdev;
 
 	pdev = pci_get_domain_bus_and_slot(iommu->pci_seg->id, PCI_BUS_NUM(devid),
@@ -572,6 +573,16 @@ static void amd_iommu_report_page_fault(struct amd_iommu *iommu,
 						IS_WRITE_REQUEST(flags) ?
 							IOMMU_FAULT_WRITE :
 							IOMMU_FAULT_READ))
+				goto out;
+
+			memset(&event, 0, sizeof(struct iommu_fault_event));
+			event.fault.type = IOMMU_FAULT_DMA_UNRECOV;
+			event.fault.event.reason = IOMMU_FAULT_REASON_PTE_FETCH;
+			event.fault.event.perm = IS_WRITE_REQUEST(flags) ?
+					IOMMU_FAULT_PERM_WRITE : IOMMU_FAULT_PERM_READ;
+			event.fault.event.addr = addr;
+			event.fault.event.flags |= IOMMU_FAULT_UNRECOV_ADDR_VALID;
+			if (!iommu_report_device_fault(&pdev->dev, &event))
 				goto out;
 		}
 
@@ -1907,6 +1918,9 @@ static struct iommu_device *amd_iommu_probe_device(struct device *dev)
 
 	iommu_completion_wait(iommu);
 
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return iommu_dev;
 }
 
@@ -1928,6 +1942,7 @@ static void amd_iommu_release_device(struct device *dev)
 	if (!iommu)
 		return;
 
+	iommu_unregister_device_fault_handler(dev);
 	amd_iommu_uninit_device(dev);
 	iommu_completion_wait(iommu);
 }
