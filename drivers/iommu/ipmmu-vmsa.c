@@ -480,6 +480,7 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 {
 	const u32 err_mask = IMSTR_MHIT | IMSTR_ABORT | IMSTR_PF | IMSTR_TF;
 	struct ipmmu_vmsa_device *mmu = domain->mmu;
+	struct iommu_fault_event event;
 	unsigned long iova;
 	u32 status;
 
@@ -517,6 +518,10 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 	 * the IOMMU device for now.
 	 */
 	if (!report_iommu_fault(&domain->io_domain, mmu->dev, iova, 0))
+		return IRQ_HANDLED;
+
+	iommu_fill_unrecoverable_dma_fault(&event, 0, iova);
+	if (!iommu_report_device_fault(mmu->dev, &event))
 		return IRQ_HANDLED;
 
 	dev_err_ratelimited(mmu->dev,
@@ -802,6 +807,9 @@ static struct iommu_device *ipmmu_probe_device(struct device *dev)
 	if (!mmu)
 		return ERR_PTR(-ENODEV);
 
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return &mmu->iommu;
 }
 
@@ -821,6 +829,8 @@ static void ipmmu_release_device(struct device *dev)
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
 	unsigned int i;
+
+	iommu_unregister_device_fault_handler(dev);
 
 	for (i = 0; i < fwspec->num_ids; ++i) {
 		unsigned int utlb = fwspec->ids[i];
