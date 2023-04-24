@@ -563,6 +563,7 @@ static void show_fault_information(struct sysmmu_drvdata *data,
 static irqreturn_t exynos_sysmmu_irq(int irq, void *dev_id)
 {
 	struct sysmmu_drvdata *data = dev_id;
+	struct iommu_fault_event event;
 	unsigned int itype;
 	struct sysmmu_fault fault;
 	int ret = -ENOSYS;
@@ -581,6 +582,10 @@ static irqreturn_t exynos_sysmmu_irq(int irq, void *dev_id)
 	show_fault_information(data, &fault);
 
 	if (data->domain) {
+		iommu_fill_unrecoverable_dma_fault(&event,
+				fault.type == IOMMU_FAULT_WRITE, fault.addr);
+		ret = iommu_report_device_fault(data->master, &event);
+
 		ret = report_iommu_fault(&data->domain->domain, data->master,
 					 fault.addr, fault.type);
 	}
@@ -1404,6 +1409,9 @@ static struct iommu_device *exynos_iommu_probe_device(struct device *dev)
 	data = list_first_entry(&owner->controllers,
 				struct sysmmu_drvdata, owner_node);
 
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return &data->iommu;
 }
 
@@ -1425,6 +1433,8 @@ static void exynos_iommu_release_device(struct device *dev)
 {
 	struct exynos_iommu_owner *owner = dev_iommu_priv_get(dev);
 	struct sysmmu_drvdata *data;
+
+	iommu_unregister_device_fault_handler(dev);
 
 	exynos_iommu_set_platform_dma(dev);
 
