@@ -383,6 +383,18 @@ struct iommu_fault_event {
 	struct list_head list;
 };
 
+static inline void
+iommu_fill_unrecoverable_dma_fault(struct iommu_fault_event *event,
+				   bool write, u64 addr)
+{
+	memset(event, 0, sizeof(struct iommu_fault_event));
+	event->fault.type = IOMMU_FAULT_DMA_UNRECOV;
+	event->fault.event.reason = IOMMU_FAULT_REASON_PTE_FETCH;
+	event->fault.event.perm = write ? IOMMU_FAULT_PERM_WRITE : IOMMU_FAULT_PERM_READ;
+	event->fault.event.addr = addr;
+	event->fault.event.flags |= IOMMU_FAULT_UNRECOV_ADDR_VALID;
+}
+
 /**
  * struct iommu_fault_param - per-device IOMMU fault data
  * @handler: Callback function to handle IOMMU faults at device level
