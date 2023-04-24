@@ -455,6 +455,7 @@ static irqreturn_t mtk_iommu_isr(int irq, void *dev_id)
 	u32 int_state, regval, va34_32, pa34_32;
 	const struct mtk_iommu_plat_data *plat_data = data->plat_data;
 	void __iomem *base = bank->base;
+	struct iommu_fault_event event;
 	u64 fault_iova, fault_pa;
 	bool layer, write;
 
@@ -506,6 +507,14 @@ static irqreturn_t mtk_iommu_isr(int irq, void *dev_id)
 			int_state, fault_iova, fault_pa, regval, fault_larb, fault_port,
 			layer, write ? "write" : "read");
 	}
+
+	iommu_fill_unrecoverable_dma_fault(&event, write, fault_iova);
+	if (iommu_report_device_fault(bank->parent_dev, &event))
+		dev_err_ratelimited(
+			bank->parent_dev,
+			"fault type=0x%x iova=0x%llx pa=0x%llx master=0x%x(larb=%d port=%d) layer=%d %s\n",
+			int_state, fault_iova, fault_pa, regval, fault_larb, fault_port,
+			layer, write ? "write" : "read");
 
 	/* Interrupt clear */
 	regval = readl_relaxed(base + REG_MMU_INT_CONTROL0);
@@ -857,6 +866,10 @@ static struct iommu_device *mtk_iommu_probe_device(struct device *dev)
 			       DL_FLAG_PM_RUNTIME | DL_FLAG_STATELESS);
 	if (!link)
 		dev_err(dev, "Unable to link %s\n", dev_name(larbdev));
+
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return &data->iommu;
 }
 
@@ -866,6 +879,8 @@ static void mtk_iommu_release_device(struct device *dev)
 	struct mtk_iommu_data *data;
 	struct device *larbdev;
 	unsigned int larbid;
+
+	iommu_unregister_device_fault_handler(dev);
 
 	data = dev_iommu_priv_get(dev);
 	if (MTK_IOMMU_IS_TYPE(data->plat_data, MTK_IOMMU_TYPE_MM)) {
