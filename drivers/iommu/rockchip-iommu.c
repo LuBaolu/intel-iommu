@@ -612,6 +612,7 @@ static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
 	u32 int_status;
 	dma_addr_t iova;
 	irqreturn_t ret = IRQ_NONE;
+	struct iommu_fault_event event;
 	int i, err;
 
 	err = pm_runtime_get_if_in_use(iommu->dev);
@@ -652,6 +653,10 @@ static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
 						   flags);
 			else
 				dev_err(iommu->dev, "Page fault while iommu not attached to domain?\n");
+
+			iommu_fill_unrecoverable_dma_fault(&event,
+					status & RK_MMU_STATUS_PAGE_FAULT_IS_WRITE, iova);
+			iommu_report_device_fault(iommu->dev, &event);
 
 			rk_iommu_base_command(iommu->bases[i], RK_MMU_CMD_ZAP_CACHE);
 			rk_iommu_base_command(iommu->bases[i], RK_MMU_CMD_PAGE_FAULT_DONE);
@@ -1173,6 +1178,9 @@ static struct iommu_device *rk_iommu_probe_device(struct device *dev)
 	data->link = device_link_add(dev, iommu->dev,
 				     DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME);
 
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return &iommu->iommu;
 }
 
@@ -1180,6 +1188,7 @@ static void rk_iommu_release_device(struct device *dev)
 {
 	struct rk_iommudata *data = dev_iommu_priv_get(dev);
 
+	iommu_unregister_device_fault_handler(dev);
 	device_link_del(data->link);
 }
 
