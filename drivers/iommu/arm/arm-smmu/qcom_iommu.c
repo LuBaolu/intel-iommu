@@ -199,6 +199,7 @@ static const struct iommu_flush_ops qcom_flush_ops = {
 static irqreturn_t qcom_iommu_fault(int irq, void *dev)
 {
 	struct qcom_iommu_ctx *ctx = dev;
+	struct iommu_fault_event event;
 	u32 fsr, fsynr;
 	u64 iova;
 
@@ -211,6 +212,14 @@ static irqreturn_t qcom_iommu_fault(int irq, void *dev)
 	iova = iommu_readq(ctx, ARM_SMMU_CB_FAR);
 
 	if (!report_iommu_fault(ctx->domain, ctx->dev, iova, 0)) {
+		dev_err_ratelimited(ctx->dev,
+				    "Unhandled context fault: fsr=0x%x, "
+				    "iova=0x%016llx, fsynr=0x%x, cb=%d\n",
+				    fsr, iova, fsynr, ctx->asid);
+	}
+
+	iommu_fill_unrecoverable_dma_fault(&event, 0, iova);
+	if (iommu_report_device_fault(ctx->dev, &event)) {
 		dev_err_ratelimited(ctx->dev,
 				    "Unhandled context fault: fsr=0x%x, "
 				    "iova=0x%016llx, fsynr=0x%x, cb=%d\n",
@@ -503,6 +512,9 @@ static struct iommu_device *qcom_iommu_probe_device(struct device *dev)
 			dev_name(qcom_iommu->dev), dev_name(dev));
 		return ERR_PTR(-ENODEV);
 	}
+
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
 
 	return &qcom_iommu->iommu;
 }
