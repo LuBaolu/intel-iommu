@@ -397,6 +397,7 @@ static irqreturn_t arm_smmu_context_fault(int irq, void *dev)
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	int idx = smmu_domain->cfg.cbndx;
+	struct iommu_fault_event event;
 	int ret;
 
 	fsr = arm_smmu_cb_read(smmu, idx, ARM_SMMU_CB_FSR);
@@ -414,6 +415,9 @@ static irqreturn_t arm_smmu_context_fault(int irq, void *dev)
 		dev_err_ratelimited(smmu->dev,
 		"Unhandled context fault: fsr=0x%x, iova=0x%08lx, fsynr=0x%x, cbfrsynra=0x%x, cb=%d\n",
 			    fsr, iova, fsynr, cbfrsynra, idx);
+
+	iommu_fill_unrecoverable_dma_fault(&event, fsynr & ARM_SMMU_FSYNR0_WNR, iova);
+	ret = iommu_report_device_fault(smmu->dev, &event);
 
 	arm_smmu_cb_write(smmu, idx, ARM_SMMU_CB_FSR, fsr);
 	return IRQ_HANDLED;
@@ -1405,6 +1409,9 @@ static struct iommu_device *arm_smmu_probe_device(struct device *dev)
 	device_link_add(dev, smmu->dev,
 			DL_FLAG_PM_RUNTIME | DL_FLAG_AUTOREMOVE_SUPPLIER);
 
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return &smmu->iommu;
 
 out_cfg_free:
@@ -1423,6 +1430,8 @@ static void arm_smmu_release_device(struct device *dev)
 	ret = arm_smmu_rpm_get(cfg->smmu);
 	if (ret < 0)
 		return;
+
+	iommu_unregister_device_fault_handler(dev);
 
 	arm_smmu_master_free_smes(cfg, fwspec);
 
