@@ -806,6 +806,7 @@ static irqreturn_t iommu_fault_handler(int irq, void *data)
 	u32 da, errs;
 	u32 *iopgd, *iopte;
 	struct omap_iommu *obj = data;
+	struct iommu_fault_event event;
 	struct iommu_domain *domain = obj->domain;
 	struct omap_iommu_domain *omap_domain = to_omap_domain(domain);
 
@@ -818,6 +819,10 @@ static irqreturn_t iommu_fault_handler(int irq, void *data)
 
 	/* Fault callback or TLB/PTE Dynamic loading */
 	if (!report_iommu_fault(domain, obj->dev, da, 0))
+		return IRQ_HANDLED;
+
+	iommu_fill_unrecoverable_dma_fault(&event, 0, da);
+	if (!iommu_report_device_fault(obj->dev, &event))
 		return IRQ_HANDLED;
 
 	iommu_write_reg(obj, 0, MMU_IRQENABLE);
@@ -1702,6 +1707,9 @@ static struct iommu_device *omap_iommu_probe_device(struct device *dev)
 	 */
 	oiommu = arch_data->iommu_dev;
 
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return &oiommu->iommu;
 }
 
@@ -1712,6 +1720,7 @@ static void omap_iommu_release_device(struct device *dev)
 	if (!dev->of_node || !arch_data)
 		return;
 
+	iommu_unregister_device_fault_handler(dev);
 	dev_iommu_priv_set(dev, NULL);
 	kfree(arch_data);
 
