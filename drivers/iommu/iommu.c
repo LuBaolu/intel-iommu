@@ -1428,6 +1428,11 @@ done_unlock:
 }
 EXPORT_SYMBOL_GPL(iommu_page_response);
 
+/*
+ * Specifically, -ENOSYS is returned if a fault handler isn't installed
+ * (though fault handlers can also return -ENOSYS, in case they want to
+ * elicit the default behavior of the IOMMU drivers).
+ */
 static int iommu_handle_unrecoverable_fault(struct device *dev,
 					    struct iommu_fault *fault)
 {
@@ -1440,7 +1445,7 @@ static int iommu_handle_unrecoverable_fault(struct device *dev,
 		domain = iommu_get_domain_for_dev(dev);
 
 	if (!domain || !domain->dmaf_handler)
-		return -ENODEV;
+		return -ENOSYS;
 
 	return domain->iopf_handler(fault, domain->dmaf_data);
 }
