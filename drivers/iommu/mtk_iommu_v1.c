@@ -197,6 +197,7 @@ static irqreturn_t mtk_iommu_v1_isr(int irq, void *dev_id)
 	struct mtk_iommu_v1_domain *dom = data->m4u_dom;
 	u32 int_state, regval, fault_iova, fault_pa;
 	unsigned int fault_larb, fault_port;
+	struct iommu_fault_event event;
 
 	/* Read error information from registers */
 	int_state = readl_relaxed(data->base + REG_MMU_FAULT_ST);
@@ -214,6 +215,13 @@ static irqreturn_t mtk_iommu_v1_isr(int irq, void *dev_id)
 	 */
 	if (report_iommu_fault(&dom->domain, data->dev, fault_iova,
 			IOMMU_FAULT_READ))
+		dev_err_ratelimited(data->dev,
+			"fault type=0x%x iova=0x%x pa=0x%x larb=%d port=%d\n",
+			int_state, fault_iova, fault_pa,
+			fault_larb, fault_port);
+
+	iommu_fill_unrecoverable_dma_fault(&event, 0, fault_iova);
+	if (iommu_report_device_fault(data->dev, &event))
 		dev_err_ratelimited(data->dev,
 			"fault type=0x%x iova=0x%x pa=0x%x larb=%d port=%d\n",
 			int_state, fault_iova, fault_pa,
@@ -506,6 +514,9 @@ static struct iommu_device *mtk_iommu_v1_probe_device(struct device *dev)
 	if (!link)
 		dev_err(dev, "Unable to link %s\n", dev_name(larbdev));
 
+	if (iommu_register_device_fault_handler(dev, iommu_device_fault_handler, dev))
+		dev_err(dev, "Failed to register fault hanlder - trying to proceed anyway");
+
 	return &data->iommu;
 }
 
@@ -530,6 +541,7 @@ static void mtk_iommu_v1_release_device(struct device *dev)
 	struct device *larbdev;
 	unsigned int larbid;
 
+	iommu_unregister_device_fault_handler(dev);
 	data = dev_iommu_priv_get(dev);
 	larbid = mt2701_m4u_to_larb(fwspec->ids[0]);
 	larbdev = data->larb_imu[larbid].dev;
