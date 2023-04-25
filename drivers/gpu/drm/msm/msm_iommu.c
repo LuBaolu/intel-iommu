@@ -219,8 +219,7 @@ static const struct iommu_flush_ops null_tlb_ops = {
 	.tlb_add_page = msm_iommu_tlb_add_page,
 };
 
-static int msm_fault_handler(struct iommu_domain *domain, struct device *dev,
-		unsigned long iova, int flags, void *arg);
+static int msm_fault_handler(struct iommu_fault *fault, void *arg);
 
 struct msm_mmu *msm_iommu_pagetable_create(struct msm_mmu *parent)
 {
@@ -242,7 +241,7 @@ struct msm_mmu *msm_iommu_pagetable_create(struct msm_mmu *parent)
 	 * to avoid accidentially installing a GPU specific fault handler for
 	 * the display's iommu
 	 */
-	iommu_set_fault_handler(iommu->domain, msm_fault_handler, iommu);
+	iommu_set_dma_fault_handler(iommu->domain, msm_fault_handler, iommu);
 
 	pagetable = kzalloc(sizeof(*pagetable), GFP_KERNEL);
 	if (!pagetable)
@@ -298,12 +297,13 @@ struct msm_mmu *msm_iommu_pagetable_create(struct msm_mmu *parent)
 	return &pagetable->base;
 }
 
-static int msm_fault_handler(struct iommu_domain *domain, struct device *dev,
-		unsigned long iova, int flags, void *arg)
+static int msm_fault_handler(struct iommu_fault *fault, void *arg)
 {
 	struct msm_iommu *iommu = arg;
 	struct adreno_smmu_priv *adreno_smmu = dev_get_drvdata(iommu->base.dev);
 	struct adreno_smmu_fault_info info, *ptr = NULL;
+	unsigned long iova = (unsigned long)fault->event.addr;
+	int flags = fault->event.flags;
 
 	if (adreno_smmu->get_fault_info) {
 		adreno_smmu->get_fault_info(adreno_smmu->cookie, &info);
