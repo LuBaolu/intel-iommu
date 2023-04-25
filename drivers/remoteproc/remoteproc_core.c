@@ -81,10 +81,12 @@ static const char *rproc_crash_to_string(enum rproc_crash_type type)
  * IOMMU core will invoke this handler whenever the remote processor
  * will try to access an unmapped device address.
  */
-static int rproc_iommu_fault(struct iommu_domain *domain, struct device *dev,
-			     unsigned long iova, int flags, void *token)
+static int rproc_iommu_fault(struct iommu_fault *fault, void *arg)
 {
-	struct rproc *rproc = token;
+	struct rproc *rproc = arg;
+	struct device *dev = rproc->dev.parent;
+	unsigned long iova = (unsigned long)fault->event.addr;
+	int flags = fault->event.flags;
 
 	dev_err(dev, "iommu fault: da 0x%lx flags 0x%x\n", iova, flags);
 
@@ -114,7 +116,7 @@ static int rproc_enable_iommu(struct rproc *rproc)
 		return -ENOMEM;
 	}
 
-	iommu_set_fault_handler(domain, rproc_iommu_fault, rproc);
+	iommu_set_dma_fault_handler(domain, rproc_iommu_fault, rproc);
 
 	ret = iommu_attach_device(domain, dev);
 	if (ret) {
