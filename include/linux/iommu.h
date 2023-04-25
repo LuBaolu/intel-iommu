@@ -121,6 +121,15 @@ static inline bool iommu_is_dma_domain(struct iommu_domain *domain)
 	return domain->type & __IOMMU_DOMAIN_DMA_API;
 }
 
+static inline void
+iommu_set_dma_fault_handler(struct iommu_domain *domain,
+			    int (*handler)(struct iommu_fault *fault, void *data),
+			    void *data)
+{
+	domain->dmaf_handler = handler;
+	domain->dmaf_data = data;
+}
+
 enum iommu_cap {
 	IOMMU_CAP_CACHE_COHERENCY,	/* IOMMU_CACHE is supported */
 	IOMMU_CAP_NOEXEC,		/* IOMMU_NOEXEC flag */
