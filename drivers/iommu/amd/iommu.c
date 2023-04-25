@@ -568,13 +568,6 @@ static void amd_iommu_report_page_fault(struct amd_iommu *iommu,
 				goto out;
 			}
 
-			if (!report_iommu_fault(&dev_data->domain->domain,
-						&pdev->dev, address,
-						IS_WRITE_REQUEST(flags) ?
-							IOMMU_FAULT_WRITE :
-							IOMMU_FAULT_READ))
-				goto out;
-
 			iommu_fill_unrecoverable_dma_fault(&event,
 						IS_WRITE_REQUEST(flags), addr);
 			if (!iommu_report_device_fault(&pdev->dev, &event))

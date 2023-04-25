@@ -450,7 +450,6 @@ static irqreturn_t mtk_iommu_isr(int irq, void *dev_id)
 {
 	struct mtk_iommu_bank_data *bank = dev_id;
 	struct mtk_iommu_data *data = bank->parent_data;
-	struct mtk_iommu_domain *dom = bank->m4u_dom;
 	unsigned int fault_larb = MTK_INVALID_LARBID, fault_port = 0, sub_comm = 0;
 	u32 int_state, regval, va34_32, pa34_32;
 	const struct mtk_iommu_plat_data *plat_data = data->plat_data;
@@ -497,15 +496,6 @@ static irqreturn_t mtk_iommu_isr(int irq, void *dev_id)
 			fault_larb = F_MMU_INT_ID_LARB_ID(regval);
 		}
 		fault_larb = data->plat_data->larbid_remap[fault_larb][sub_comm];
-	}
-
-	if (!dom || report_iommu_fault(&dom->domain, bank->parent_dev, fault_iova,
-			       write ? IOMMU_FAULT_WRITE : IOMMU_FAULT_READ)) {
-		dev_err_ratelimited(
-			bank->parent_dev,
-			"fault type=0x%x iova=0x%llx pa=0x%llx master=0x%x(larb=%d port=%d) layer=%d %s\n",
-			int_state, fault_iova, fault_pa, regval, fault_larb, fault_port,
-			layer, write ? "write" : "read");
 	}
 
 	iommu_fill_unrecoverable_dma_fault(&event, write, fault_iova);

@@ -517,9 +517,6 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 	 * TODO: We need to look up the faulty device based on the I/O VA. Use
 	 * the IOMMU device for now.
 	 */
-	if (!report_iommu_fault(&domain->io_domain, mmu->dev, iova, 0))
-		return IRQ_HANDLED;
-
 	iommu_fill_unrecoverable_dma_fault(&event, 0, iova);
 	if (!iommu_report_device_fault(mmu->dev, &event))
 		return IRQ_HANDLED;

@@ -585,9 +585,6 @@ static irqreturn_t exynos_sysmmu_irq(int irq, void *dev_id)
 		iommu_fill_unrecoverable_dma_fault(&event,
 				fault.type == IOMMU_FAULT_WRITE, fault.addr);
 		ret = iommu_report_device_fault(data->master, &event);
-
-		ret = report_iommu_fault(&data->domain->domain, data->master,
-					 fault.addr, fault.type);
 	}
 	if (ret)
 		panic("Unrecoverable System MMU Fault!");

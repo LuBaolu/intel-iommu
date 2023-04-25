@@ -211,13 +211,6 @@ static irqreturn_t qcom_iommu_fault(int irq, void *dev)
 	fsynr = iommu_readl(ctx, ARM_SMMU_CB_FSYNR0);
 	iova = iommu_readq(ctx, ARM_SMMU_CB_FAR);
 
-	if (!report_iommu_fault(ctx->domain, ctx->dev, iova, 0)) {
-		dev_err_ratelimited(ctx->dev,
-				    "Unhandled context fault: fsr=0x%x, "
-				    "iova=0x%016llx, fsynr=0x%x, cb=%d\n",
-				    fsr, iova, fsynr, ctx->asid);
-	}
-
 	iommu_fill_unrecoverable_dma_fault(&event, 0, iova);
 	if (iommu_report_device_fault(ctx->dev, &event)) {
 		dev_err_ratelimited(ctx->dev,

@@ -46,8 +46,6 @@ struct iommu_dma_cookie;
 #define IOMMU_FAULT_READ	0x0
 #define IOMMU_FAULT_WRITE	0x1
 
-typedef int (*iommu_fault_handler_t)(struct iommu_domain *,
-			struct device *, unsigned long, int, void *);
 typedef int (*iommu_dev_fault_handler_t)(struct iommu_fault *, void *);
 
 struct iommu_domain_geometry {
@@ -104,16 +102,10 @@ struct iommu_domain {
 	enum iommu_page_response_code (*iopf_handler)(struct iommu_fault *fault,
 						      void *data);
 	void *fault_data;
-	union {
-		struct {
-			iommu_fault_handler_t handler;
-			void *handler_token;
-		};
-		struct {	/* IOMMU_DOMAIN_SVA */
-			struct mm_struct *mm;
-			int users;
-		};
-	};
+
+	/* IOMMU_DOMAIN_SVA specific */
+	struct mm_struct *mm;
+	int users;
 };
 
 static inline bool iommu_is_dma_domain(struct iommu_domain *domain)
@@ -505,8 +497,6 @@ extern ssize_t iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 			    struct scatterlist *sg, unsigned int nents,
 			    int prot, gfp_t gfp);
 extern phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova);
-extern void iommu_set_fault_handler(struct iommu_domain *domain,
-			iommu_fault_handler_t handler, void *token);
 
 extern void iommu_get_resv_regions(struct device *dev, struct list_head *list);
 extern void iommu_put_resv_regions(struct device *dev, struct list_head *list);
@@ -557,9 +547,6 @@ int iommu_set_pgtable_quirks(struct iommu_domain *domain,
 		unsigned long quirks);
 
 void iommu_set_dma_strict(void);
-
-extern int report_iommu_fault(struct iommu_domain *domain, struct device *dev,
-			      unsigned long iova, int flags);
 
 static inline void iommu_flush_iotlb_all(struct iommu_domain *domain)
 {
@@ -829,11 +816,6 @@ static inline void iommu_iotlb_sync(struct iommu_domain *domain,
 static inline phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 {
 	return 0;
-}
-
-static inline void iommu_set_fault_handler(struct iommu_domain *domain,
-				iommu_fault_handler_t handler, void *token)
-{
 }
 
 static inline void iommu_get_resv_regions(struct device *dev,

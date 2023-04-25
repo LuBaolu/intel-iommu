@@ -1990,29 +1990,6 @@ bool iommu_group_has_isolated_msi(struct iommu_group *group)
 }
 EXPORT_SYMBOL_GPL(iommu_group_has_isolated_msi);
 
-/**
- * iommu_set_fault_handler() - set a fault handler for an iommu domain
- * @domain: iommu domain
- * @handler: fault handler
- * @token: user data, will be passed back to the fault handler
- *
- * This function should be used by IOMMU users which want to be notified
- * whenever an IOMMU fault happens.
- *
- * The fault handler itself should return 0 on success, and an appropriate
- * error code otherwise.
- */
-void iommu_set_fault_handler(struct iommu_domain *domain,
-					iommu_fault_handler_t handler,
-					void *token)
-{
-	BUG_ON(!domain);
-
-	domain->handler = handler;
-	domain->handler_token = token;
-}
-EXPORT_SYMBOL_GPL(iommu_set_fault_handler);
-
 static struct iommu_domain *__iommu_domain_alloc(struct bus_type *bus,
 						 unsigned type)
 {
@@ -2630,48 +2607,6 @@ out_err:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(iommu_map_sg);
-
-/**
- * report_iommu_fault() - report about an IOMMU fault to the IOMMU framework
- * @domain: the iommu domain where the fault has happened
- * @dev: the device where the fault has happened
- * @iova: the faulting address
- * @flags: mmu fault flags (e.g. IOMMU_FAULT_READ/IOMMU_FAULT_WRITE/...)
- *
- * This function should be called by the low-level IOMMU implementations
- * whenever IOMMU faults happen, to allow high-level users, that are
- * interested in such events, to know about them.
- *
- * This event may be useful for several possible use cases:
- * - mere logging of the event
- * - dynamic TLB/PTE loading
- * - if restarting of the faulting device is required
- *
- * Returns 0 on success and an appropriate error code otherwise (if dynamic
- * PTE/TLB loading will one day be supported, implementations will be able
- * to tell whether it succeeded or not according to this return value).
- *
- * Specifically, -ENOSYS is returned if a fault handler isn't installed
- * (though fault handlers can also return -ENOSYS, in case they want to
- * elicit the default behavior of the IOMMU drivers).
- */
-int report_iommu_fault(struct iommu_domain *domain, struct device *dev,
-		       unsigned long iova, int flags)
-{
-	int ret = -ENOSYS;
-
-	/*
-	 * if upper layers showed interest and installed a fault handler,
-	 * invoke it.
-	 */
-	if (domain->handler)
-		ret = domain->handler(domain, dev, iova, flags,
-						domain->handler_token);
-
-	trace_io_page_fault(dev, iova, flags);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(report_iommu_fault);
 
 static int __init iommu_init(void)
 {

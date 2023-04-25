@@ -857,11 +857,6 @@ static void sun50i_iommu_report_fault(struct sun50i_iommu *iommu,
 	dev_err(iommu->dev, "Page fault for %pad (master %d, dir %s)\n",
 		&iova, master, (prot == IOMMU_FAULT_WRITE) ? "wr" : "rd");
 
-	if (iommu->domain)
-		report_iommu_fault(iommu->domain, iommu->dev, iova, prot);
-	else
-		dev_err(iommu->dev, "Page fault while iommu not attached to any domain?\n");
-
 	iommu_fill_unrecoverable_dma_fault(&event, prot == IOMMU_FAULT_WRITE, iova);
 	/* Is this the right device? */
 	iommu_report_device_fault(iommu->dev, &event);

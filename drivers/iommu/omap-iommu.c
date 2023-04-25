@@ -818,9 +818,6 @@ static irqreturn_t iommu_fault_handler(int irq, void *data)
 		return IRQ_HANDLED;
 
 	/* Fault callback or TLB/PTE Dynamic loading */
-	if (!report_iommu_fault(domain, obj->dev, da, 0))
-		return IRQ_HANDLED;
-
 	iommu_fill_unrecoverable_dma_fault(&event, 0, da);
 	if (!iommu_report_device_fault(obj->dev, &event))
 		return IRQ_HANDLED;

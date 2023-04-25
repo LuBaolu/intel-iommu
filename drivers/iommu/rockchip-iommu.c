@@ -648,12 +648,6 @@ static irqreturn_t rk_iommu_irq(int irq, void *dev_id)
 			 * Ignore the return code, though, since we always zap cache
 			 * and clear the page fault anyway.
 			 */
-			if (iommu->domain != &rk_identity_domain)
-				report_iommu_fault(iommu->domain, iommu->dev, iova,
-						   flags);
-			else
-				dev_err(iommu->dev, "Page fault while iommu not attached to domain?\n");
-
 			iommu_fill_unrecoverable_dma_fault(&event,
 					status & RK_MMU_STATUS_PAGE_FAULT_IS_WRITE, iova);
 			iommu_report_device_fault(iommu->dev, &event);

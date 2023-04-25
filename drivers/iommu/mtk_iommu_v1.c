@@ -213,13 +213,6 @@ static irqreturn_t mtk_iommu_v1_isr(int irq, void *dev_id)
 	 * MTK v1 iommu HW could not determine whether the fault is read or
 	 * write fault, report as read fault.
 	 */
-	if (report_iommu_fault(&dom->domain, data->dev, fault_iova,
-			IOMMU_FAULT_READ))
-		dev_err_ratelimited(data->dev,
-			"fault type=0x%x iova=0x%x pa=0x%x larb=%d port=%d\n",
-			int_state, fault_iova, fault_pa,
-			fault_larb, fault_port);
-
 	iommu_fill_unrecoverable_dma_fault(&event, 0, fault_iova);
 	if (iommu_report_device_fault(data->dev, &event))
 		dev_err_ratelimited(data->dev,
