@@ -51,11 +51,13 @@
 	((void *) &((struct usnic_uiom_chunk *) 0)->page_list[1] -	\
 	(void *) &((struct usnic_uiom_chunk *) 0)->page_list[0]))
 
-static int usnic_uiom_dma_fault(struct iommu_domain *domain,
-				struct device *dev,
-				unsigned long iova, int flags,
-				void *token)
+static int usnic_uiom_dma_fault(struct iommu_fault *fault, void *arg)
 {
+	struct device *dev = arg;
+	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
+	unsigned long iova = (unsigned long)fault->event.addr;
+	int flags = fault->event.flags;
+
 	usnic_err("Device %s iommu fault domain 0x%pK va 0x%lx flags 0x%x\n",
 		dev_name(dev),
 		domain, iova, flags);
@@ -450,7 +452,7 @@ struct usnic_uiom_pd *usnic_uiom_alloc_pd(struct device *dev)
 		return ERR_PTR(-ENOMEM);
 	}
 
-	iommu_set_fault_handler(pd->domain, usnic_uiom_dma_fault, NULL);
+	iommu_set_dma_fault_handler(pd->domain, usnic_uiom_dma_fault, dev);
 
 	spin_lock_init(&pd->lock);
 	INIT_LIST_HEAD(&pd->devs);
