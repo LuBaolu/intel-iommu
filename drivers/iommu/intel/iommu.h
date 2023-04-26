@@ -694,6 +694,17 @@ struct intel_iommu {
 	void *perf_statistic;
 
 	struct iommu_pmu *pmu;
+	struct workqueue_struct *dma_fault_wq;
+};
+
+struct dma_fault {
+	struct work_struct work;
+	struct intel_iommu *iommu;
+	unsigned long long addr;
+	int		type;
+	u8		fault_reason;
+	u32		pasid;
+	u16		source_id;
 };
 
 /* PCI domain-device relationship */

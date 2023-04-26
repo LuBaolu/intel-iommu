@@ -3905,6 +3905,12 @@ int __init intel_iommu_init(void)
 			pr_info_once("IOMMU batching disallowed due to virtualization\n");
 			iommu_set_dma_strict();
 		}
+
+		iommu->dma_fault_wq = alloc_workqueue("dmar_fault",
+				WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
+		if (!iommu->dma_fault_wq)
+			pr_err_once("Failed to allocate fault dispatcher, proceed anyway");
+
 		iommu_device_sysfs_add(&iommu->iommu, NULL,
 				       intel_iommu_groups,
 				       "%s", iommu->name);

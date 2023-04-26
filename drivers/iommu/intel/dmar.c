@@ -1173,6 +1173,9 @@ static void free_iommu(struct intel_iommu *iommu)
 
 	free_iommu_pmu(iommu);
 
+	if (iommu->dma_fault_wq)
+		destroy_workqueue(iommu->dma_fault_wq);
+
 	if (iommu->irq) {
 		if (iommu->pr_irq) {
 			free_irq(iommu->pr_irq, iommu);
@@ -1940,10 +1943,15 @@ void dmar_msi_read(int irq, struct msi_msg *msg)
 	raw_spin_unlock_irqrestore(&iommu->register_lock, flag);
 }
 
-static int dmar_fault_do_one(struct intel_iommu *iommu, int type,
-		u8 fault_reason, u32 pasid, u16 source_id,
-		unsigned long long addr)
+static void dmar_fault_do_one(struct work_struct *work)
 {
+	struct dma_fault *dma_fault = container_of(work, struct dma_fault, work);
+	struct intel_iommu *iommu = dma_fault->iommu;
+	unsigned long long addr = dma_fault->addr;
+	u8 fault_reason = dma_fault->fault_reason;
+	u16 source_id = dma_fault->source_id;
+	u32 pasid = dma_fault->pasid;
+	int type = dma_fault->type;
 	const char *reason;
 	int fault_type;
 
@@ -1955,7 +1963,7 @@ static int dmar_fault_do_one(struct intel_iommu *iommu, int type,
 		       PCI_FUNC(source_id & 0xFF), addr >> 48,
 		       fault_reason, reason);
 
-		return 0;
+		goto out;
 	}
 
 	if (pasid == IOMMU_PASID_INVALID)
@@ -1972,8 +1980,8 @@ static int dmar_fault_do_one(struct intel_iommu *iommu, int type,
 		       fault_reason, reason);
 
 	dmar_fault_dump_ptes(iommu, source_id, addr, pasid);
-
-	return 0;
+out:
+	kfree(dma_fault);
 }
 
 #define PRIMARY_FAULT_REG_LEN (16)
@@ -2036,11 +2044,23 @@ irqreturn_t dmar_fault(int irq, void *dev_id)
 
 		raw_spin_unlock_irqrestore(&iommu->register_lock, flag);
 
-		if (!ratelimited)
-			/* Using pasid -1 if pasid is not present */
-			dmar_fault_do_one(iommu, type, fault_reason,
-					  pasid_present ? pasid : IOMMU_PASID_INVALID,
-					  source_id, guest_addr);
+		if (!ratelimited) {
+			struct dma_fault *dma_fault;
+
+			dma_fault = kzalloc(sizeof(*dma_fault), GFP_ATOMIC);
+			dma_fault->iommu = iommu;
+			dma_fault->addr = guest_addr;
+			dma_fault->type = type;
+			dma_fault->fault_reason = fault_reason;
+			dma_fault->pasid = pasid_present ?
+					pasid : IOMMU_PASID_INVALID;
+			dma_fault->source_id = source_id;
+			INIT_WORK(&dma_fault->work, dmar_fault_do_one);
+			if (iommu->dma_fault_wq)
+				queue_work(iommu->dma_fault_wq, &dma_fault->work);
+			else
+				dmar_fault_do_one(&dma_fault->work);
+		}
 
 		fault_index++;
 		if (fault_index >= cap_num_fault_regs(iommu->cap))
