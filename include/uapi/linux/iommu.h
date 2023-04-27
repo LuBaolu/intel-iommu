@@ -71,6 +71,7 @@ struct iommu_fault_unrecoverable {
 #define IOMMU_FAULT_UNRECOV_PASID_VALID		(1 << 0)
 #define IOMMU_FAULT_UNRECOV_ADDR_VALID		(1 << 1)
 #define IOMMU_FAULT_UNRECOV_FETCH_ADDR_VALID	(1 << 2)
+#define IOMMU_FAULT_UNRECOV_REASON_VT_D		(1 << 3)
 	__u32	flags;
 	__u32	pasid;
 	__u32	perm;
