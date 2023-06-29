@@ -157,7 +157,7 @@ EXPORT_SYMBOL_GPL(iommu_sva_get_pasid);
  * I/O page fault handler for SVA
  */
 enum iommu_page_response_code
-iommu_sva_handle_iopf(struct iommu_fault *fault, void *data)
+iommu_sva_handle_iopf(struct iommu_fault *fault, struct device *dev, void *data)
 {
 	vm_fault_t ret;
 	struct vm_area_struct *vma;
