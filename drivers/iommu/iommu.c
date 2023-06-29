@@ -287,20 +287,20 @@ void iommu_device_unregister(struct iommu_device *iommu)
 }
 EXPORT_SYMBOL_GPL(iommu_device_unregister);
 
-static struct dev_iommu *dev_iommu_get(struct device *dev)
+static int dev_iommu_get(struct device *dev)
 {
 	struct dev_iommu *param = dev->iommu;
 
 	if (param)
-		return param;
+		return 0;
 
 	param = kzalloc(sizeof(*param), GFP_KERNEL);
 	if (!param)
-		return NULL;
+		return -ENOMEM;
 
 	mutex_init(&param->lock);
 	dev->iommu = param;
-	return param;
+	return 0;
 }
 
 static void dev_iommu_free(struct device *dev)
@@ -351,10 +351,9 @@ static int __iommu_probe_device(struct device *dev, struct list_head *group_list
 	 * but for now enforcing a simple global ordering is fine.
 	 */
 	mutex_lock(&iommu_probe_device_lock);
-	if (!dev_iommu_get(dev)) {
-		ret = -ENOMEM;
+	ret = dev_iommu_get(dev);
+	if (ret)
 		goto err_unlock;
-	}
 
 	if (!try_module_get(ops->owner)) {
 		ret = -EINVAL;
@@ -2751,12 +2750,14 @@ int iommu_fwspec_init(struct device *dev, struct fwnode_handle *iommu_fwnode,
 		      const struct iommu_ops *ops)
 {
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	int ret;
 
 	if (fwspec)
 		return ops == fwspec->ops ? 0 : -EINVAL;
 
-	if (!dev_iommu_get(dev))
-		return -ENOMEM;
+	ret = dev_iommu_get(dev);
+	if (ret)
+		return ret;
 
 	/* Preallocate for the overwhelmingly common case of 1 ID */
 	fwspec = kzalloc(struct_size(fwspec, ids, 1), GFP_KERNEL);
