@@ -1278,6 +1278,28 @@ unlock:
 }
 EXPORT_SYMBOL_GPL(iommu_unregister_device_fault_handler);
 
+static int iommu_handle_io_pgfault(struct device *dev,
+				   struct iommu_fault *fault)
+{
+	struct iommu_domain *domain;
+
+	if (fault->type != IOMMU_FAULT_PAGE_REQ)
+		return -EINVAL;
+
+	if (fault->prm.flags & IOMMU_FAULT_PAGE_REQUEST_PASID_VALID)
+		domain = iommu_get_domain_for_dev_pasid(dev, fault->prm.pasid, 0);
+	else
+		domain = iommu_get_domain_for_dev(dev);
+
+	if (!domain || !domain->iopf_handler)
+		return -ENODEV;
+
+	if (domain->iopf_handler == iommu_sva_handle_iopf)
+		return iommu_queue_iopf(fault, dev);
+
+	return domain->iopf_handler(fault, dev, domain->fault_data);
+}
+
 /**
  * iommu_report_device_fault() - Report fault event to device driver
  * @dev: the device
@@ -1320,7 +1342,7 @@ int iommu_report_device_fault(struct device *dev, struct iommu_fault_event *evt)
 		mutex_unlock(&fparam->lock);
 	}
 
-	ret = fparam->handler(&evt->fault, fparam->data);
+	ret = iommu_handle_io_pgfault(dev, &evt->fault);
 	if (ret && evt_pending) {
 		mutex_lock(&fparam->lock);
 		list_del(&evt_pending->list);
