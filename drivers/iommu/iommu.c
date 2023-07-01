@@ -1337,6 +1337,50 @@ done_unlock:
 EXPORT_SYMBOL_GPL(iommu_page_response);
 
 /**
+ * iommu_set_device_fault_cookie - Set a fault cookie for per-{device, pasid}
+ * @dev: the device to set the cookie
+ * @pasid: the pasid on this device
+ * @cookie: the opaque data
+ *
+ * Return the old cookie on success, or ERR_PTR(err#) on failure.
+ */
+void *iommu_set_device_fault_cookie(struct device *dev, ioasid_t pasid,
+				    void *cookie)
+{
+	struct iommu_fault_param *fault_param;
+	void *curr;
+
+	if (!dev->iommu || !dev->iommu->fault_param)
+		return ERR_PTR(-ENODEV);
+
+	fault_param = dev->iommu->fault_param;
+	curr = xa_store(&fault_param->pasid_cookie, pasid, cookie, GFP_KERNEL);
+
+	return xa_is_err(curr) ? ERR_PTR(xa_err(curr)) : curr;
+}
+EXPORT_SYMBOL_GPL(iommu_set_device_fault_cookie);
+
+/**
+ * iommu_get_device_fault_cookie - Get the fault cookie for {device, pasid}
+ * @dev: the device to set the cookie
+ * @pasid: the pasid on this device
+ *
+ * Return the cookie on success, or ERR_PTR(err#) on failure.
+ */
+void *iommu_get_device_fault_cookie(struct device *dev, ioasid_t pasid)
+{
+	struct iommu_fault_param *fault_param;
+
+	if (!dev->iommu || !dev->iommu->fault_param)
+		return ERR_PTR(-ENODEV);
+
+	fault_param = dev->iommu->fault_param;
+
+	return xa_load(&fault_param->pasid_cookie, pasid);
+}
+EXPORT_SYMBOL_GPL(iommu_get_device_fault_cookie);
+
+/**
  * iommu_group_id - Return ID for a group
  * @group: the group to ID
  *

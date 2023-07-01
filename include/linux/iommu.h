@@ -539,10 +539,12 @@ struct iommu_fault_event {
  * struct iommu_fault_param - per-device IOMMU fault data
  * @faults: holds the pending faults which needs response
  * @lock: protect pending faults list
+ * @pasid_cookie: per-pasid fault cookie
  */
 struct iommu_fault_param {
 	struct list_head faults;
 	struct mutex lock;
+	struct xarray pasid_cookie;
 };
 
 /**
@@ -636,6 +638,8 @@ extern void iommu_set_fault_handler(struct iommu_domain *domain,
 			iommu_fault_handler_t handler, void *token);
 void iommu_domain_set_iopf_handler(struct iommu_domain *domain,
 				   iommu_iopf_handler_t handler, void *data);
+void *iommu_set_device_fault_cookie(struct device *dev, ioasid_t pasid, void *cookie);
+void *iommu_get_device_fault_cookie(struct device *dev, ioasid_t pasid);
 
 extern void iommu_get_resv_regions(struct device *dev, struct list_head *list);
 extern void iommu_put_resv_regions(struct device *dev, struct list_head *list);
@@ -963,6 +967,17 @@ static inline void iommu_domain_set_iopf_handler(struct iommu_domain *domain,
 						 iommu_iopf_handler_t handler,
 						 void *data)
 {
+}
+
+static inline void *iommu_set_device_fault_cookie(struct device *dev,
+						  ioasid_t pasid, void *cookie)
+{
+}
+
+static inline void *iommu_get_device_fault_cookie(struct device *dev,
+						  ioasid_t pasid)
+{
+	return ERR_PTR(-ENODEV);
 }
 
 static inline void iommu_get_resv_regions(struct device *dev,
