@@ -35,8 +35,6 @@
 
 #include "dma-iommu.h"
 
-#include "iommu-sva.h"
-
 static struct kset *iommu_group_kset;
 static DEFINE_IDA(iommu_group_ida);
 
