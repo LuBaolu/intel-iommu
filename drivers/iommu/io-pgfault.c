@@ -129,6 +129,9 @@ int iommu_queue_iopf(struct iommu_fault *fault, struct device *dev)
 		domain = iommu_get_domain_for_dev(dev);
 
 	if (!domain || !domain->iopf_handler) {
+		dev_warn_ratelimited(dev,
+			"iopf from pasid %d received without handler installed\n",
+			 fault->prm.pasid);
 		ret = -ENODEV;
 		goto cleanup_partial;
 	}
