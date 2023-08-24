@@ -1951,6 +1951,27 @@ int iommu_deferred_attach(struct device *dev, struct iommu_domain *domain)
 	return 0;
 }
 
+static void assert_no_pending_iopf(struct device *dev, ioasid_t pasid)
+{
+	struct iommu_fault_param *iopf_param = dev->iommu->fault_param;
+	struct iopf_fault *iopf;
+
+	if (!iopf_param)
+		return;
+
+	mutex_lock(&iopf_param->lock);
+	list_for_each_entry(iopf, &iopf_param->partial, list) {
+		if (WARN_ON(iopf->fault.prm.pasid == pasid))
+			break;
+	}
+
+	list_for_each_entry(iopf, &iopf_param->faults, list) {
+		if (WARN_ON(iopf->fault.prm.pasid == pasid))
+			break;
+	}
+	mutex_unlock(&iopf_param->lock);
+}
+
 void iommu_detach_device(struct iommu_domain *domain, struct device *dev)
 {
 	struct iommu_group *group;
@@ -1959,6 +1980,7 @@ void iommu_detach_device(struct iommu_domain *domain, struct device *dev)
 	if (!group)
 		return;
 
+	assert_no_pending_iopf(dev, IOMMU_NO_PASID);
 	mutex_lock(&group->mutex);
 	if (WARN_ON(domain != group->domain) ||
 	    WARN_ON(list_count_nodes(&group->devices) != 1))
@@ -3269,6 +3291,7 @@ void iommu_detach_device_pasid(struct iommu_domain *domain, struct device *dev,
 {
 	struct iommu_group *group = iommu_group_get(dev);
 
+	assert_no_pending_iopf(dev, pasid);
 	mutex_lock(&group->mutex);
 	__iommu_remove_group_pasid(group, pasid);
 	WARN_ON(xa_erase(&group->pasid_array, pasid) != domain);
