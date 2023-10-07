@@ -355,9 +355,17 @@ struct iommu_vfio_ioas {
  * @IOMMU_HWPT_ALLOC_NEST_PARENT: If set, allocate a domain which can serve
  *                                as the parent domain in the nesting
  *                                configuration.
+ * @IOMMU_HWPT_ALLOC_IOPF_CAPABLE: User is capable of handling IO page faults.
+ *                                 On successful return, user can retrieve
+ *                                 faults by reading the @out_fault_fd and
+ *                                 respond the faults by writing it. The fault
+ *                                 data is encoded in the format defined by
+ *                                 iommu_hwpt_pgfault. The response data format
+ *                                 is defined by iommu_hwpt_page_response
  */
 enum iommufd_hwpt_alloc_flags {
 	IOMMU_HWPT_ALLOC_NEST_PARENT = 1 << 0,
+	IOMMU_HWPT_ALLOC_IOPF_CAPABLE = 1 << 1,
 };
 
 /**
@@ -476,6 +484,7 @@ struct iommu_hwpt_alloc {
 	__u32 hwpt_type;
 	__u32 data_len;
 	__aligned_u64 data_uptr;
+	__u32 out_fault_fd;
 };
 #define IOMMU_HWPT_ALLOC _IO(IOMMUFD_TYPE, IOMMUFD_CMD_HWPT_ALLOC)
 
@@ -677,6 +686,62 @@ struct iommu_hwpt_invalidate {
  */
 struct iommu_dev_data_arm_smmuv3 {
 	__u32 sid;
+};
+
+/**
+ * struct iommu_hwpt_pgfault - iommu page fault data
+ * @size: sizeof(struct iommu_hwpt_pgfault)
+ * @flags: Combination of IOMMU_PGFAULT_FLAGS_ flags.
+ *  - PASID_VALID: @pasid field is valid
+ *  - LAST_PAGE: the last page fault in a group
+ *  - PRIV_DATA: @private_data field is valid
+ *  - RESP_NEEDS_PASID: the page response must have the same
+ *                      PASID value as the page request.
+ * @dev_id: id of the originated device
+ * @pasid: Process Address Space ID
+ * @grpid: Page Request Group Index
+ * @perm: requested page permissions (IOMMU_PGFAULT_PERM_* values)
+ * @addr: page address
+ * @private_data: device-specific private information
+ */
+struct iommu_hwpt_pgfault {
+	__u32 size;
+	__u32 flags;
+#define IOMMU_PGFAULT_FLAGS_PASID_VALID		(1 << 0)
+#define IOMMU_PGFAULT_FLAGS_LAST_PAGE		(1 << 1)
+#define IOMMU_PGFAULT_FLAGS_PRIV_DATA		(1 << 2)
+#define IOMMU_PGFAULT_FLAGS_RESP_NEEDS_PASID	(1 << 3)
+	__u32 dev_id;
+	__u32 pasid;
+	__u32 grpid;
+	__u32 perm;
+#define IOMMU_PGFAULT_PERM_READ			(1 << 0)
+#define IOMMU_PGFAULT_PERM_WRITE		(1 << 1)
+#define IOMMU_PGFAULT_PERM_EXEC			(1 << 2)
+#define IOMMU_PGFAULT_PERM_PRIV			(1 << 3)
+	__u64 addr;
+	__u64 private_data[2];
+};
+
+/**
+ * struct iommu_hwpt_response - IOMMU page fault response
+ * @size: sizeof(struct iommu_hwpt_response)
+ * @flags: Must be set to 0
+ * @hwpt_id: hwpt ID of target hardware page table for the response
+ * @dev_id: device ID of target device for the response
+ * @pasid: Process Address Space ID
+ * @grpid: Page Request Group Index
+ * @code: response code. The supported codes include:
+ *        0: Successful; 1: Response Failure; 2: Invalid Request.
+ */
+struct iommu_hwpt_page_response {
+	__u32 size;
+	__u32 flags;
+	__u32 hwpt_id;
+	__u32 dev_id;
+	__u32 pasid;
+	__u32 grpid;
+	__u32 code;
 };
 
 /**
