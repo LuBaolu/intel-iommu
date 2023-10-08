@@ -38,9 +38,38 @@ static void iommufd_kernel_managed_hwpt_destroy(struct iommufd_object *obj)
 	refcount_dec(&hwpt->ioas->obj.users);
 }
 
+static struct hw_pgtable_fault *hw_pagetable_fault_alloc(void)
+{
+	struct hw_pgtable_fault *fault;
+
+	fault = kzalloc(sizeof(*fault), GFP_KERNEL);
+	if (!fault)
+		return ERR_PTR(-ENOMEM);
+
+	INIT_LIST_HEAD(&fault->deliver);
+	INIT_LIST_HEAD(&fault->response);
+	mutex_init(&fault->mutex);
+
+	return fault;
+}
+
+static void hw_pagetable_fault_free(struct hw_pgtable_fault *fault)
+{
+	WARN_ON(!list_empty(&fault->deliver));
+	WARN_ON(!list_empty(&fault->response));
+
+	kfree(fault);
+}
+
 void iommufd_hw_pagetable_destroy(struct iommufd_object *obj)
 {
-	container_of(obj, struct iommufd_hw_pagetable, obj)->destroy(obj);
+	struct iommufd_hw_pagetable *hwpt =
+		container_of(obj, struct iommufd_hw_pagetable, obj);
+
+	if (hwpt->fault)
+		hw_pagetable_fault_free(hwpt->fault);
+
+	hwpt->destroy(obj);
 }
 
 static void iommufd_user_managed_hwpt_abort(struct iommufd_object *obj)
@@ -289,6 +318,17 @@ out_abort:
 	return ERR_PTR(rc);
 }
 
+static int iommufd_hw_pagetable_iopf_handler(struct iopf_group *group)
+{
+	struct iommufd_hw_pagetable *hwpt = group->domain->fault_data;
+
+	mutex_lock(&hwpt->fault->mutex);
+	list_add_tail(&group->node, &hwpt->fault->deliver);
+	mutex_unlock(&hwpt->fault->mutex);
+
+	return 0;
+}
+
 int iommufd_hwpt_alloc(struct iommufd_ucmd *ucmd)
 {
 	struct iommufd_hw_pagetable *(*alloc_fn)(
@@ -362,6 +402,20 @@ int iommufd_hwpt_alloc(struct iommufd_ucmd *ucmd)
 	if (IS_ERR(hwpt)) {
 		rc = PTR_ERR(hwpt);
 		goto out_unlock;
+	}
+
+	if (cmd->flags & IOMMU_HWPT_ALLOC_IOPF_CAPABLE) {
+		hwpt->fault = hw_pagetable_fault_alloc();
+		if (IS_ERR(hwpt->fault)) {
+			rc = PTR_ERR(hwpt->fault);
+			hwpt->fault = NULL;
+			goto out_hwpt;
+		}
+
+		hwpt->fault->ictx = ucmd->ictx;
+		hwpt->fault->hwpt = hwpt;
+		hwpt->domain->iopf_handler = iommufd_hw_pagetable_iopf_handler;
+		hwpt->domain->fault_data = hwpt;
 	}
 
 	cmd->out_hwpt_id = hwpt->obj.id;
