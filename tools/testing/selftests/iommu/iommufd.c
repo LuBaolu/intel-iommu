@@ -275,11 +275,12 @@ TEST_F(iommufd_ioas, alloc_hwpt_nested)
 		.iotlb =  IOMMU_TEST_IOTLB_DEFAULT,
 	};
 	struct iommu_hwpt_invalidate_selftest inv_reqs[2] = {0};
-	uint32_t nested_hwpt_id[2] = {};
+	uint32_t nested_hwpt_id[3] = {};
 	uint32_t num_inv, driver_error;
 	uint32_t parent_hwpt_id = 0;
 	uint32_t parent_hwpt_id_not_work = 0;
 	uint32_t test_hwpt_id = 0;
+	uint32_t fault_fd;
 
 	if (self->device_id) {
 		/* Negative tests */
@@ -323,7 +324,7 @@ TEST_F(iommufd_ioas, alloc_hwpt_nested)
 					   IOMMU_HWPT_TYPE_SELFTEST,
 					   &data, sizeof(data));
 
-		/* Allocate two nested hwpts sharing one common parent hwpt */
+		/* Allocate nested hwpts sharing one common parent hwpt */
 		test_cmd_hwpt_alloc_nested(self->device_id, parent_hwpt_id,
 					   0, &nested_hwpt_id[0],
 					   IOMMU_HWPT_TYPE_SELFTEST,
@@ -332,6 +333,11 @@ TEST_F(iommufd_ioas, alloc_hwpt_nested)
 					   0, &nested_hwpt_id[1],
 					   IOMMU_HWPT_TYPE_SELFTEST,
 					   &data, sizeof(data));
+		test_cmd_hwpt_alloc_nested_iopf(self->device_id, parent_hwpt_id,
+						IOMMU_HWPT_ALLOC_IOPF_CAPABLE,
+						&nested_hwpt_id[2], &fault_fd,
+						IOMMU_HWPT_TYPE_SELFTEST,
+						&data, sizeof(data));
 		test_cmd_hwpt_check_iotlb_all(nested_hwpt_id[0],
 					      IOMMU_TEST_IOTLB_DEFAULT);
 		test_cmd_hwpt_check_iotlb_all(nested_hwpt_id[1],
@@ -418,9 +424,19 @@ TEST_F(iommufd_ioas, alloc_hwpt_nested)
 			     _test_ioctl_destroy(self->fd, nested_hwpt_id[1]));
 		test_ioctl_destroy(nested_hwpt_id[0]);
 
-		/* Detach from nested_hwpt_id[1] and destroy it */
-		test_cmd_mock_domain_replace(self->stdev_id, parent_hwpt_id);
+		/* Switch from nested_hwpt_id[1] to nested_hwpt_id[2] */
+		test_cmd_mock_domain_replace(self->stdev_id,
+					     nested_hwpt_id[2]);
+		EXPECT_ERRNO(EBUSY,
+			     _test_ioctl_destroy(self->fd, nested_hwpt_id[2]));
 		test_ioctl_destroy(nested_hwpt_id[1]);
+
+		/* Trigger an IOPF on the device */
+		test_cmd_trigger_iopf(self->device_id, fault_fd, nested_hwpt_id[2]);
+
+		/* Detach from nested_hwpt_id[2] and destroy it */
+		test_cmd_mock_domain_replace(self->stdev_id, parent_hwpt_id);
+		test_ioctl_destroy(nested_hwpt_id[2]);
 
 		/* Detach from the parent hw_pagetable and destroy it */
 		test_cmd_mock_domain_replace(self->stdev_id, self->ioas_id);

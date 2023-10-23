@@ -103,8 +103,8 @@ static int _test_cmd_mock_domain_replace(int fd, __u32 stdev_id, __u32 pt_id,
 							   pt_id, NULL))
 
 static int _test_cmd_hwpt_alloc(int fd, __u32 device_id, __u32 pt_id,
-				__u32 flags, __u32 *hwpt_id, __u32 hwpt_type,
-				void *data, size_t data_len)
+				__u32 flags, __u32 *hwpt_id, __u32 *fault_fd,
+				__u32 hwpt_type, void *data, size_t data_len)
 {
 	struct iommu_hwpt_alloc cmd = {
 		.size = sizeof(cmd),
@@ -122,28 +122,39 @@ static int _test_cmd_hwpt_alloc(int fd, __u32 device_id, __u32 pt_id,
 		return ret;
 	if (hwpt_id)
 		*hwpt_id = cmd.out_hwpt_id;
+	if (fault_fd)
+		*fault_fd = cmd.out_fault_fd;
+
 	return 0;
 }
 
 #define test_cmd_hwpt_alloc(device_id, pt_id, flags, hwpt_id)                \
 	ASSERT_EQ(0, _test_cmd_hwpt_alloc(self->fd, device_id, pt_id, flags, \
-					  hwpt_id, IOMMU_HWPT_TYPE_DEFAULT,  \
+					  hwpt_id, NULL,                     \
+					  IOMMU_HWPT_TYPE_DEFAULT,           \
 					  NULL, 0))
 #define test_err_hwpt_alloc(_errno, device_id, pt_id, flags, hwpt_id)         \
 	EXPECT_ERRNO(_errno, _test_cmd_hwpt_alloc(self->fd, device_id, pt_id, \
-						  flags, hwpt_id,             \
+						  flags, hwpt_id, NULL,       \
 						  IOMMU_HWPT_TYPE_DEFAULT,    \
 						  NULL, 0))
 
 #define test_cmd_hwpt_alloc_nested(device_id, pt_id, flags, hwpt_id,          \
 				   hwpt_type, data, data_len)                 \
 	ASSERT_EQ(0, _test_cmd_hwpt_alloc(self->fd, device_id, pt_id, flags,  \
-					  hwpt_id, hwpt_type, data, data_len))
+					  hwpt_id, NULL, hwpt_type, data,     \
+					  data_len))
 #define test_err_hwpt_alloc_nested(_errno, device_id, pt_id, flags, hwpt_id,  \
 				   hwpt_type, data, data_len)                 \
 	EXPECT_ERRNO(_errno,                                                  \
 		     _test_cmd_hwpt_alloc(self->fd, device_id, pt_id, flags,  \
-					  hwpt_id, hwpt_type, data, data_len))
+					  hwpt_id, NULL, hwpt_type, data,     \
+					  data_len))
+#define test_cmd_hwpt_alloc_nested_iopf(device_id, pt_id, flags, hwpt_id,     \
+					fault_fd, hwpt_type, data, data_len)  \
+	ASSERT_EQ(0, _test_cmd_hwpt_alloc(self->fd, device_id, pt_id, flags,  \
+					  hwpt_id, fault_fd, hwpt_type, data, \
+					  data_len))
 
 #define test_cmd_hwpt_check_iotlb(hwpt_id, iotlb_id, expected)                 \
 	({                                                                     \
@@ -551,3 +562,46 @@ static int _test_cmd_unset_dev_data(int fd, __u32 device_id)
 #define test_err_unset_dev_data(_errno, device_id) \
 	EXPECT_ERRNO(_errno,                       \
 		     _test_cmd_unset_dev_data(self->fd, device_id))
+
+static int _test_cmd_trigger_iopf(int fd, __u32 device_id, __u32 fault_fd, __u32 hwpt_id)
+{
+	struct iommu_test_cmd trigger_iopf_cmd = {
+		.size = sizeof(trigger_iopf_cmd),
+		.op = IOMMU_TEST_OP_TRIGGER_IOPF,
+		.trigger_iopf = {
+			.dev_id = device_id,
+			.pasid = 0x1,
+			.grpid = 0x2,
+			.perm = IOMMU_PGFAULT_PERM_READ | IOMMU_PGFAULT_PERM_WRITE,
+			.addr = 0xdeadbeaf,
+		},
+	};
+	struct iommu_hwpt_page_response response = {
+		.size = sizeof(struct iommu_hwpt_page_response),
+		.hwpt_id = hwpt_id,
+		.dev_id = device_id,
+		.pasid = 0x1,
+		.grpid = 0x2,
+		.code = 0,
+	};
+	struct iommu_hwpt_pgfault fault = {};
+	ssize_t bytes;
+	int ret;
+
+	ret = ioctl(fd, _IOMMU_TEST_CMD(IOMMU_TEST_OP_TRIGGER_IOPF), &trigger_iopf_cmd);
+	if (ret)
+		return ret;
+
+	bytes = read(fault_fd, &fault, sizeof(fault));
+	if (bytes < 0)
+		return bytes;
+
+	bytes = write(fault_fd, &response, sizeof(response));
+	if (bytes < 0)
+		return bytes;
+
+	return 0;
+}
+
+#define test_cmd_trigger_iopf(device_id, fault_fd, hwpt_id) \
+	ASSERT_EQ(0, _test_cmd_trigger_iopf(self->fd, device_id, fault_fd, hwpt_id))
