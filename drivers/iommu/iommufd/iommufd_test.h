@@ -21,6 +21,7 @@ enum {
 	IOMMU_TEST_OP_ACCESS_REPLACE_IOAS,
 	IOMMU_TEST_OP_MD_CHECK_IOTLB,
 	IOMMU_TEST_OP_DEV_CHECK_DATA,
+	IOMMU_TEST_OP_TRIGGER_IOPF,
 };
 
 enum {
@@ -109,6 +110,13 @@ struct iommu_test_cmd {
 		struct {
 			__u32 val;
 		} check_dev_data;
+		struct {
+			__u32 dev_id;
+			__u32 pasid;
+			__u32 grpid;
+			__u32 perm;
+			__u64 addr;
+		} trigger_iopf;
 	};
 	__u32 last;
 };
