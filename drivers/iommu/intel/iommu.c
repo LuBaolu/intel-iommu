@@ -4270,15 +4270,26 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 		ret = intel_pasid_alloc_table(dev);
 		if (ret) {
 			dev_err(dev, "PASID table allocation failed\n");
-			dev_iommu_priv_set(dev, NULL);
-			kfree(info);
-			return ERR_PTR(ret);
+			goto err_clear_priv;
+		}
+
+		ret = intel_pasid_setup_sm_context(dev, false);
+		if (ret) {
+			dev_err(dev, "Scalable context entry setup failed\n");
+			goto err_free_table;
 		}
 	}
 
 	intel_iommu_debugfs_create_dev(info);
 
 	return &iommu->iommu;
+err_free_table:
+	intel_pasid_free_table(dev);
+err_clear_priv:
+	dev_iommu_priv_set(dev, NULL);
+	kfree(info);
+
+return ERR_PTR(ret);
 }
 
 static void intel_iommu_release_device(struct device *dev)
