@@ -502,4 +502,47 @@ static_assert(sizeof(struct rec_run) == SZ_4K);
 #define RMI_S2AP_DIRECT_READ			BIT(1)
 #define RMI_S2AP_DIRECT_WRITE			BIT(0)
 
+enum rmi_pdev_state {
+	RMI_PDEV_NEW,
+	RMI_PDEV_NEEDS_KEY,
+	RMI_PDEV_HAS_KEY,
+	RMI_PDEV_READY,
+	RMI_PDEV_STOPPED,
+	RMI_PDEV_ERROR,
+};
+
+#define RMI_PDEV_FLAGS_SPDM		BIT(0)
+#define RMI_PDEV_FLAGS_CATEGORY_MASK	GENMASK(2, 1)
+#define RMI_PDEV_FLAGS_CATEGORY_SHIFT	1
+#define RMI_PDEV_FLAGS_P2P		BIT(3)
+
+#define RMI_PDEV_FLAGS_CATEGORY_ROOT_PORT	0x0
+#define RMI_PDEV_FLAGS_CATEGORY_OFF_CHIP_EP	0x1
+#define RMI_PDEV_FLAGS_CATEGORY_ON_CHIP_EP	0x2
+
+struct rmi_pdev_params {
+	union {
+		struct {
+			u64 flags;
+			u64 hb_base;
+			u64 pdev_id;
+			u64 routing_id;
+			u64 id_index;
+			union {
+				u32 rid_base;
+				u8 padding0[8];
+			};
+			union {
+				u32 rid_top;
+				u8 padding1[8];
+			};
+			union {
+				u8 hash_algo;
+				u8 padding2[8];
+			};
+		};
+		u8 padding3[0x1000];
+	};
+};
+
 #endif /* __LINUX_ARM_SMCCC_RMI_H_ */
