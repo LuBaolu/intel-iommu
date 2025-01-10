@@ -9,6 +9,13 @@ config ARM_CCA_HOST
 	depends on ARM_RMM_RMI
 	depends on HAVE_ARM_SMCCC_DISCOVERY
 	select PCI_TSM
+	select KEYS
+	select ASYMMETRIC_KEY_TYPE
+	select ASYMMETRIC_PUBLIC_KEY_SUBTYPE
+	select CRYPTO
+	select X509_CERTIFICATE_PARSER
+	select CRYPTO_ECDSA
+	select CRYPTO_RSA
 
 	help
 	  ARM CCA RMM firmware is the trusted runtime that enforces memory

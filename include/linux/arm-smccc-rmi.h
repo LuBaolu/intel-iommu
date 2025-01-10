@@ -607,4 +607,22 @@ struct rmi_dev_comm_data {
 	};
 };
 
+struct rmi_public_key_params {
+	union {
+		struct {
+			union { /* 0x0 */
+				u64 key_addr;
+				u8 padding0[0x400];
+			};
+			union { /* 0x400 */
+				u64 metadata_addr;
+				u8 padding1[0x400];
+			};
+			u64 key_len;
+			u64 metadata_len;
+		};
+		u8 padding[0x1000];
+	};
+};
+
 #endif /* __LINUX_ARM_SMCCC_RMI_H_ */

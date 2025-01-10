@@ -59,6 +59,7 @@ struct cca_host_pdev_dsc {
  * @pci: Physical Function 0 TDISP link context
  * @pdev: pdev communication context
  * @sel_stream: Selective IDE Stream descriptor
+ * @rmi_signature_algorithm: Signature algorithm used for public key
  * @cert_chain: cetrificate chain
  * @vca: SPDM's Version-Capabilities-Algorithms cache object
  */
@@ -67,6 +68,7 @@ struct cca_host_pf0_ep_dsc {
 	struct cca_host_pdev_dsc pdev;
 	struct pci_ide *sel_stream;
 
+	char *rmi_signature_algorithm;
 	struct {
 		struct cache_object *cache;
 
