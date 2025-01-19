@@ -10,6 +10,8 @@
 #include <linux/pci-tsm.h>
 #include <linux/arm-smccc-rsi.h>
 
+#define MAX_CACHE_OBJ_SIZE	SZ_16M
+
 struct cca_guest_dsc {
 	struct pci_tsm_devsec pci;
 };
