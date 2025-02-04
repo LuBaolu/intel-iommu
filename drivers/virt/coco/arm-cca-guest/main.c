@@ -173,39 +173,306 @@ static void unregister_cca_tsm_report(void *data)
 }
 
 #ifdef CONFIG_PCI_TSM
+
+static int __maybe_unused
+cca_update_dev_measurements(struct pci_dev *pdev, const u8 *nonce)
+{
+	int ret;
+	void *measurements;
+	size_t measurements_size;
+	int vdev_id = rsi_vdev_id(pdev);
+	struct pci_tsm_evidence *evidence;
+	struct rsi_vdevice_info *dev_info;
+	struct pci_tsm_evidence_object *obj;
+	struct cca_guest_dsc *dsc = to_cca_guest_dsc(pdev);
+
+	/* Regenerate the measurement from the device */
+	ret = rhi_update_vdev_measurements_cache(pdev, nonce);
+	if (ret) {
+		pci_err(pdev, "failed to update device measurements from device (%d)\n", ret);
+		return ret;
+	}
+
+	ret = rhi_read_cached_object(vdev_id, RHI_DA_OBJECT_MEASUREMENT,
+				     &measurements, &measurements_size);
+	if (ret) {
+		pci_err(pdev, "failed to get device measurements from the host (%d)\n", ret);
+		return ret;
+	}
+
+	dev_info = kmalloc(sizeof(*dev_info), GFP_KERNEL);
+	if (!dev_info) {
+		ret = -ENOMEM;
+		goto free_measurements;
+	}
+
+	if (rsi_vdev_get_info(vdev_id, virt_to_phys(dev_info))) {
+		pci_err(pdev, "failed to get device digests (%d)\n", ret);
+		ret = -EIO;
+		goto free_dev_info;
+	}
+
+	/* Make sure no unexpected lock/unlock operation happened from guest */
+	if (dsc->dev_info.lock_nonce != dev_info->lock_nonce) {
+		pci_err(pdev, "Unexpected lock/unlock operation from host (%d)\n", ret);
+		ret = -EIO;
+		goto free_dev_info;
+	}
+
+	/*
+	 * Verify that the digests of the provided reports match with the
+	 * digests from RMM
+	 */
+	ret = cca_verify_digest(dev_info->hash_algo, measurements,
+				measurements_size, dev_info->meas_digest);
+	if (ret) {
+		pci_err(pdev, "RMM provided digest mismatch (%d)\n", ret);
+		goto free_dev_info;
+	}
+
+	/* fill evidence details */
+	evidence = &dsc->pci.base_tsm.evidence;
+
+	/* Now update the evidence under lock. */
+	down_write(&evidence->lock);
+	evidence->generation = dev_info->meas_nonce;
+
+	obj = &evidence->obj[PCI_TSM_EVIDENCE_TYPE_MEASUREMENTS];
+	if (obj->data)
+		kvfree(obj->data);
+	obj->data = measurements;
+	obj->len = measurements_size;
+
+	dsc->dev_info.meas_nonce    = dev_info->meas_nonce;
+	memcpy(dsc->dev_info.meas_digest, dev_info->meas_digest, SHA512_DIGEST_SIZE);
+	up_write(&evidence->lock);
+
+	kfree(dev_info);
+	return 0;
+
+free_dev_info:
+	kfree(dev_info);
+free_measurements:
+	kvfree(measurements);
+	return ret;
+}
+
+static int cca_collect_dev_evidence(struct pci_dev *pdev, struct cca_guest_dsc *dsc)
+{
+	int ret;
+	int vdev_id = rsi_vdev_id(pdev);
+	struct pci_tsm_evidence *evidence;
+	struct rsi_vdevice_info *dev_info;
+	struct pci_tsm_evidence_object *obj;
+	void *certificate, *vca, *interface_report, *measurements;
+	size_t certificate_size, vca_size, interface_report_size, measurements_size;
+
+	/* Regenerate interface report and measurement from the device */
+	ret = cca_update_device_object_cache(pdev, NULL);
+	if (ret) {
+		pci_err(pdev, "failed to update device objects from device (%d)\n", ret);
+		return ret;
+	}
+
+	ret = rhi_read_cached_object(vdev_id, RHI_DA_OBJECT_CERTIFICATE,
+				     &certificate, &certificate_size);
+	if (ret) {
+		pci_err(pdev, "failed to get device certificate from the host (%d)\n", ret);
+		return ret;
+	}
+
+	ret = rhi_read_cached_object(vdev_id, RHI_DA_OBJECT_VCA, &vca, &vca_size);
+	if (ret) {
+		pci_err(pdev, "failed to get device VCA from the host (%d)\n", ret);
+		goto free_certificate;
+	}
+
+	ret = rhi_read_cached_object(vdev_id, RHI_DA_OBJECT_INTERFACE_REPORT,
+				     &interface_report, &interface_report_size);
+	if (ret) {
+		pci_err(pdev, "failed to get interface report from the host (%d)\n", ret);
+		goto free_vca;
+	}
+
+	ret = rhi_read_cached_object(vdev_id, RHI_DA_OBJECT_MEASUREMENT,
+				     &measurements, &measurements_size);
+	if (ret) {
+		pci_err(pdev, "failed to get device certificate from the host (%d)\n", ret);
+		goto free_interface_report;
+	}
+
+	dev_info = kmalloc(sizeof(*dev_info), GFP_KERNEL);
+	if (!dev_info) {
+		ret = -ENOMEM;
+		goto free_measurements;
+	}
+
+	if (rsi_vdev_get_info(vdev_id, virt_to_phys(dev_info))) {
+		pci_err(pdev, "failed to get device digests (%d)\n", ret);
+		ret = -EIO;
+		goto free_dev_info;
+	}
+
+	/* Make sure no unexpected lock/unlock operation happened from guest */
+	if (dsc->dev_info.lock_nonce != dev_info->lock_nonce) {
+		pci_err(pdev, "Unexpected lock/unlock operation from host (%d)\n", ret);
+		ret = -EIO;
+		goto free_dev_info;
+	}
+
+	/*
+	 * Verify that the digests of the provided reports match with the
+	 * digests from RMM
+	 */
+	ret = cca_verify_digests(dev_info->hash_algo, certificate,
+				 certificate_size, vca, vca_size,
+				 interface_report, interface_report_size,
+				 measurements, measurements_size, dev_info);
+	if (ret) {
+		pci_err(pdev, "RMM provided digest mismatch (%d)\n", ret);
+		goto free_dev_info;
+	}
+
+	/* fill evidence details */
+	evidence = &dsc->pci.base_tsm.evidence;
+
+	/* Now update the evidence under lock. */
+	down_write(&evidence->lock);
+	evidence->generation = dev_info->meas_nonce;
+
+	/* we default to slot 0 in pdev_create */
+	obj = &evidence->obj[PCI_TSM_EVIDENCE_TYPE_CERT0];
+	WARN_ON(obj->data);
+	obj->data = certificate;
+	obj->len = certificate_size;
+
+	obj = &evidence->obj[PCI_TSM_EVIDENCE_TYPE_VCA];
+	WARN_ON(obj->data);
+	obj->data = vca;
+	obj->len = vca_size;
+
+	obj = &evidence->obj[PCI_TSM_EVIDENCE_TYPE_REPORT];
+	WARN_ON(obj->data);
+	obj->data = interface_report;
+	obj->len = interface_report_size;
+
+	obj = &evidence->obj[PCI_TSM_EVIDENCE_TYPE_MEASUREMENTS];
+	WARN_ON(obj->data);
+	obj->data = measurements;
+	obj->len = measurements_size;
+
+	dsc->dev_info.meas_nonce    = dev_info->meas_nonce;
+	dsc->dev_info.report_nonce  = dev_info->report_nonce;
+	memcpy(dsc->dev_info.cert_digest, dev_info->identity_digest, SHA512_DIGEST_SIZE);
+	memcpy(dsc->dev_info.vca_digest, dev_info->protocol_data_digest, SHA512_DIGEST_SIZE);
+	memcpy(dsc->dev_info.meas_digest, dev_info->meas_digest, SHA512_DIGEST_SIZE);
+	memcpy(dsc->dev_info.report_digest, dev_info->report_digest, SHA512_DIGEST_SIZE);
+	up_write(&evidence->lock);
+
+	kfree(dev_info);
+	return 0;
+
+free_dev_info:
+	kfree(dev_info);
+free_measurements:
+	kvfree(measurements);
+free_interface_report:
+	kvfree(interface_report);
+free_vca:
+	kvfree(vca);
+free_certificate:
+	kvfree(certificate);
+	return ret;
+}
+
 static struct pci_tsm *cca_tsm_lock(struct tsm_dev *tsm_dev, struct pci_dev *pdev)
 {
 	int ret;
+	enum hash_algo digest_algo;
+	struct cca_guest_dsc *cca_dsc;
+	int vdev_id = rsi_vdev_id(pdev);
+	struct rsi_vdevice_info *dev_info;
 
-	struct cca_guest_dsc *cca_dsc __free(kfree) =
-		kzalloc_obj(struct cca_guest_dsc);
+	cca_dsc = kzalloc_obj(struct cca_guest_dsc);
 	if (!cca_dsc)
 		return ERR_PTR(-ENOMEM);
 
 	ret = pci_tsm_devsec_constructor(pdev, &cca_dsc->pci, tsm_dev);
 	if (ret)
-		return ERR_PTR(ret);
+		goto free_cca_dsc;
 
 	ret = cca_device_lock(pdev);
 	if (ret)
-		return ERR_PTR(ret);
+		goto free_cca_dsc;
 
-	/* collect evidence without nonce */
-	ret = cca_update_device_object_cache(pdev, NULL);
-	if (ret) {
-		cca_device_unlock(pdev);
-		return ERR_PTR(ret);
+	dev_info = kmalloc_obj(struct rsi_vdevice_info);
+	if (!dev_info) {
+		ret = -ENOMEM;
+		goto dev_unlock;
 	}
 
-	return &no_free_ptr(cca_dsc)->pci.base_tsm;
+	if (rsi_vdev_get_info(vdev_id, virt_to_phys(dev_info))) {
+		ret = -EIO;
+		goto free_dev_info;
+	}
+
+	/* collect the lock nonce */
+	cca_dsc->dev_info.lock_nonce = dev_info->lock_nonce;
+
+	switch (dev_info->hash_algo) {
+	case RSI_HASH_SHA_256:
+		digest_algo = HASH_ALGO_SHA256;
+		break;
+	case RSI_HASH_SHA_512:
+		digest_algo = HASH_ALGO_SHA512;
+		break;
+	default:
+		ret = -EIO;
+		goto free_dev_info;
+	}
+	pci_tsm_init_evidence(&cca_dsc->pci.base_tsm.evidence,
+			      dev_info->id_index, digest_algo);
+
+	/* collect evidence without nonce */
+	ret = cca_collect_dev_evidence(pdev, cca_dsc);
+	if (ret)
+		goto free_dev_info;
+
+	kfree(dev_info);
+	return &cca_dsc->pci.base_tsm;
+
+free_dev_info:
+	kfree(dev_info);
+dev_unlock:
+	cca_device_unlock(pdev);
+free_cca_dsc:
+	kfree(cca_dsc);
+	return ERR_PTR(ret);
 }
 
 static void cca_tsm_unlock(struct pci_tsm *tsm)
 {
-	struct cca_guest_dsc *cca_dsc = to_cca_guest_dsc(tsm->pdev);
+	long ret;
+	struct pci_dev *pdev = tsm->pdev;
+	struct cca_guest_dsc *cca_dsc = to_cca_guest_dsc(pdev);
+
+	/* invalidate dev mapping based on interface report */
+	ret = cca_unmap_evidence_report_range(tsm->pdev);
+	if (ret) {
+		pci_err(tsm->pdev, "failed to invalidate the interface report\n");
+		goto err_out;
+	}
 
 	cca_device_unlock(tsm->pdev);
+	if (cca_dsc->pci.mmio)
+		pci_tsm_mmio_teardown(cca_dsc->pci.mmio);
 
+err_out:
+	/*
+	 * No error handling from this function. Leave the device locked
+	 */
+	if (cca_dsc->pci.mmio)
+		pci_tsm_mmio_free(tsm->pdev, cca_dsc->pci.mmio);
 	kfree(cca_dsc);
 }
 
