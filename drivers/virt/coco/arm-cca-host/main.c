@@ -64,7 +64,7 @@ static void cca_tsm_pci_remove(struct pci_tsm *tsm)
 	}
 }
 
-static __maybe_unused int init_dev_communication_buffers(struct pci_dev *pdev,
+static int init_dev_communication_buffers(struct pci_dev *pdev,
 		struct cca_host_comm_data *comm_data)
 {
 	int ret = -ENOMEM;
@@ -158,15 +158,43 @@ static int __maybe_unused cca_tsm_connect(struct pci_dev *pdev)
 		ide->partner[PCI_IDE_EP].default_stream = 1;
 		pci_ide_stream_setup(pdev, ide);
 		pci_ide_stream_setup(rp, ide);
-
-		/*
-		 * Once ide is setup, enable the stream at the endpoint
-		 * Root port will be done by RMM
-		 */
-		pci_ide_stream_enable(pdev, ide);
 	}
+
+	ret = init_dev_communication_buffers(pdev, &pf0_ep_dsc->pdev.comm_data);
+	if (ret)
+		goto err_comm_buff;
+	ret = cca_pdev_create(pdev);
+	if (ret)
+		goto err_pdev_create;
+
+	ret = cca_pdev_collect_identity(pdev);
+	if (ret)
+		goto pdev_destroy;
+
+	if (cca_pdev_needs_key(pdev)) {
+		ret = cca_pdev_set_public_key(pdev);
+		if (ret)
+			goto pdev_destroy;
+	}
+	/*
+	 * Once ide is setup, enable the stream at the endpoint
+	 * Root port will be done by RMM
+	 */
+	if (cca_pdev_need_sel_ide_streams(pdev))
+		pci_ide_stream_enable(pdev, ide);
+
 	return 0;
 
+pdev_destroy:
+	cca_pdev_stop_and_destroy(pdev);
+err_pdev_create:
+	free_dev_communication_buffers(&pf0_ep_dsc->pdev.comm_data);
+err_comm_buff:
+	if (cca_pdev_need_sel_ide_streams(pdev)) {
+		pci_ide_stream_teardown(rp, ide);
+		pci_ide_stream_teardown(pdev, ide);
+		pci_ide_stream_unregister(ide);
+	}
 err_stream:
 	if (cca_pdev_need_sel_ide_streams(pdev))
 		pci_ide_stream_free(ide);
@@ -185,13 +213,16 @@ static void __maybe_unused cca_tsm_disconnect(struct pci_dev *pdev)
 	if (!pf0_ep_dsc)
 		return;
 
-	if (cca_pdev_need_sel_ide_streams(pdev)) {
+	if (cca_pdev_need_sel_ide_streams(pdev))
 		ide = pf0_ep_dsc->sel_stream;
 
+	cca_pdev_stop_and_destroy(pdev);
+	free_dev_communication_buffers(&pf0_ep_dsc->pdev.comm_data);
+
+	if (cca_pdev_need_sel_ide_streams(pdev)) {
 		pci_ide_stream_release(ide);
 		pf0_ep_dsc->sel_stream = NULL;
 	}
-
 }
 
 static struct pci_tsm_ops cca_link_pci_ops = {
