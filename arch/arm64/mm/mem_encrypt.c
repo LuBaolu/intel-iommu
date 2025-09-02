@@ -15,6 +15,7 @@
 
 #include <linux/bug.h>
 #include <linux/compiler.h>
+#include <linux/device.h>
 #include <linux/err.h>
 #include <linux/cc_shared.h>
 #include <linux/mm.h>
@@ -57,3 +58,12 @@ size_t arch_cc_shared_granule_size(void)
 
 	return crypt_ops->shared_granule_size();
 }
+
+bool force_dma_unencrypted(struct device *dev)
+{
+	if (device_cc_accepted(dev))
+		return false;
+
+	return is_realm_world() || is_protected_kvm_guest();
+}
+EXPORT_SYMBOL_GPL(force_dma_unencrypted);
