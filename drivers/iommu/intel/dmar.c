@@ -434,6 +434,7 @@ static int dmar_parse_one_drhd(struct acpi_dmar_header *header, void *arg)
 	dmaru->devices = dmar_alloc_dev_scope((void *)(drhd + 1),
 					      ((void *)drhd) + drhd->header.length,
 					      &dmaru->devices_cnt);
+	dmaru->node = NUMA_NO_NODE;
 	if (dmaru->devices_cnt && dmaru->devices == NULL) {
 		kfree(dmaru);
 		return -ENOMEM;
@@ -499,6 +500,7 @@ static int dmar_parse_one_rhsa(struct acpi_dmar_header *header, void *arg)
 
 			if (node != NUMA_NO_NODE && !node_online(node))
 				node = NUMA_NO_NODE;
+			drhd->node = node;
 			drhd->iommu->node = node;
 			return 0;
 		}
@@ -2468,3 +2470,77 @@ bool dmar_platform_optin(void)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(dmar_platform_optin);
+
+int dmar_tdxcs_iommu_init(int (*setup)(struct dmar_drhd_unit *))
+{
+	struct dmar_drhd_unit *drhd;
+	int ret;
+
+	if (!intel_iommu_enabled)
+		return -EOPNOTSUPP;
+
+	guard(rwsem_read)(&dmar_global_lock);
+
+	for_each_active_drhd_unit(drhd) {
+		struct intel_iommu *iommu = drhd->iommu;
+		unsigned long ndoms = cap_ndoms(iommu->cap);
+
+		if (!ecap_tdxcs(iommu->ecap))
+			continue;
+
+		/*
+		 * Intel TDX Connect Application Binary Interface (ABI)
+		 * Reference, section 3.2.11. TDH.IOMMU.SETUP Leaf:
+		 *
+		 * TDH.IOMMU.SETUP checks the following pre-conditions:
+		 * - There is the IOMMU with the VTBAR address IOMMU_VTBAR,
+		 *   and the IOMMU is not in Configured state.
+		 * - VTBAR is in the valid state:
+		 *   a. No enhanced command in progress.
+		 *   b. IOMMU not in TDX mode.
+		 *   c. VMM’s RTADDR is latched.
+		 *   d. VMM’s queued invalidations enabled.
+		 *   e. DMA translations enabled.
+		 *   f. DMA access to PRM disabled.
+		 *   g. PRM status disabled.
+		 *   h. DMA translation is in scalable mode.
+		 *
+		 * Fail with TDX_IOMMU_INVALID_STATE in case of an invalid
+		 * VTBAR state.
+		 */
+		if (drhd->tdx_mode || !(iommu->gcmd & DMA_GCMD_TE) ||
+		    !(iommu->qi) || !sm_supported(iommu))
+			return -EINVAL;
+
+		mutex_lock(&iommu->did_lock);
+		if (ida_find_first_range(&iommu->domain_ida, ndoms >> 1, ndoms - 1) > 0) {
+			mutex_unlock(&iommu->did_lock);
+			return -EBUSY;
+		}
+		iommu->max_domain_id = ndoms >> 1;
+		mutex_unlock(&iommu->did_lock);
+
+		ret = setup(drhd);
+		if (ret) {
+			mutex_lock(&iommu->did_lock);
+			iommu->max_domain_id = ndoms;
+			mutex_unlock(&iommu->did_lock);
+
+			return ret;
+		}
+
+		drhd->tdx_mode = 1;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxcs_iommu_init, "tdx-host");
+
+void dmar_tdxcs_iommu_exit(struct dmar_drhd_unit *drhd)
+{
+	struct intel_iommu *iommu = drhd->iommu;
+
+	iommu->max_domain_id = cap_ndoms(iommu->cap);
+	drhd->tdx_mode = 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxcs_iommu_exit, "tdx-host");

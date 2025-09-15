@@ -2189,8 +2189,20 @@ int dmar_iommu_hotplug(struct dmar_drhd_unit *dmaru, bool insert)
 		return -EINVAL;
 
 	if (insert) {
+		/*
+		 * If an IOMMU is hot-added after intel_tdxc_initialized is set, it is
+		 * not enrolled into TDX secure mode. Ideally this should be integrated
+		 * with dmar_iommu_hotplug() so intel_iommu_bringup_tdxc() can run on
+		 * hotplug. This is currently skipped due to lack of hardware validation.
+		 * Log this limitation to make it visible.
+		 */
+		if (ecap_tdxcs(iommu->ecap))
+			pr_info("Trusted DMA for TEE is not enabled on hot-added IOMMU %s\n",
+				iommu->name);
 		ret = intel_iommu_add(dmaru);
 	} else {
+		if (dmaru->tdx_mode)
+			return -EBUSY;
 		disable_dmar_iommu(iommu);
 		free_dmar_iommu(iommu);
 	}
@@ -4224,6 +4236,12 @@ int ecmd_submit_sync(struct intel_iommu *iommu, u8 ecmd, u64 oa, u64 ob)
 
 	if (!cap_ecmds(iommu->cap))
 		return -ENODEV;
+
+	/*
+	 * Synchronize use of the enhanced command interface for
+	 * TDH.IOMMU.SETUP.
+	 */
+	guard(rwsem_read)(&dmar_global_lock);
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
 

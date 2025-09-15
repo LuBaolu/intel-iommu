@@ -47,6 +47,8 @@ struct dmar_drhd_unit {
 	u8	ignored:1; 		/* ignore drhd		*/
 	u8	include_all:1;
 	u8	gfx_dedicated:1;	/* graphic dedicated	*/
+	u8	tdx_mode:1;		/* in secure tdx mode	*/
+	int	node;
 	struct intel_iommu *iommu;
 };
 
@@ -86,6 +88,9 @@ extern struct list_head dmar_drhd_units;
 	list_for_each_entry_rcu(drhd, &dmar_drhd_units, list,		\
 				dmar_rcu_check())			\
 		if (i=drhd->iommu, 0) {} else 
+
+int dmar_tdxcs_iommu_init(int (*setup)(struct dmar_drhd_unit *));
+void dmar_tdxcs_iommu_exit(struct dmar_drhd_unit *drhd);
 
 static inline bool dmar_rcu_check(void)
 {
