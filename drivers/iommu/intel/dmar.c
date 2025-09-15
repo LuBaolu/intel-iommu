@@ -431,6 +431,7 @@ static int dmar_parse_one_drhd(struct acpi_dmar_header *header, void *arg)
 	/* The size of the register set is 2 ^ N 4 KB pages. */
 	dmaru->reg_size = 1UL << (drhd->size + 12);
 	dmaru->include_all = drhd->flags & 0x1; /* BIT0: INCLUDE_ALL */
+	mutex_init(&dmaru->tdxc_lock);
 	dmaru->devices = dmar_alloc_dev_scope((void *)(drhd + 1),
 					      ((void *)drhd) + drhd->header.length,
 					      &dmaru->devices_cnt);
@@ -2367,6 +2368,25 @@ static int dmar_hp_release_drhd(struct acpi_dmar_header *header, void *arg)
 	return 0;
 }
 
+static int dmar_hp_check_tdxc(struct acpi_dmar_header *header, void *arg)
+{
+	struct dmar_drhd_unit *dmaru;
+
+	dmaru = dmar_find_dmaru((struct acpi_dmar_hardware_unit *)header);
+	if (!dmaru || !dmaru->iommu || !ecap_tdxcs(dmaru->iommu->ecap))
+		return 0;
+
+	/*
+	 * No platform currently supports both trusted DMA and DMAR hotplug,
+	 * so it cannot be validated on real hardware. Removal is also unsafe:
+	 * tdx-host may hold a pointer to this unit and the TDX module may own
+	 * its trusted DMA resources.
+	 */
+	pr_info("%s: hotplug of an IOMMU with trusted DMA support is not supported\n",
+		dmaru->iommu->name);
+	return -EOPNOTSUPP;
+}
+
 static int dmar_hotplug_insert(acpi_handle handle)
 {
 	int ret;
@@ -2397,6 +2417,11 @@ static int dmar_hotplug_insert(acpi_handle handle)
 		goto release_atsr;
 
 	ret = dmar_walk_dsm_resource(handle, DMAR_DSM_FUNC_DRHD,
+				     &dmar_hp_check_tdxc, NULL);
+	if (ret)
+		goto release_atsr;
+
+	ret = dmar_walk_dsm_resource(handle, DMAR_DSM_FUNC_DRHD,
 				     &dmar_hp_add_drhd, NULL);
 	if (!ret)
 		return 0;
@@ -2419,6 +2444,11 @@ static int dmar_hotplug_remove(acpi_handle handle)
 
 	ret = dmar_walk_dsm_resource(handle, DMAR_DSM_FUNC_ATSR,
 				     &dmar_check_one_atsr, NULL);
+	if (ret)
+		return ret;
+
+	ret = dmar_walk_dsm_resource(handle, DMAR_DSM_FUNC_DRHD,
+				     &dmar_hp_check_tdxc, NULL);
 	if (ret)
 		return ret;
 
@@ -2518,3 +2548,158 @@ bool dmar_platform_optin(void)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(dmar_platform_optin);
+
+static void dmar_tdxc_fill_params(struct dmar_drhd_unit *drhd,
+				  struct dmar_tdxc_params *params)
+{
+	params->reg_base_addr = drhd->reg_base_addr;
+	params->node = drhd->iommu->node;
+	/*
+	 * params->drhd stays valid because trusted DMA-capable units are
+	 * never hot-removed.
+	 */
+	params->drhd = drhd;
+}
+
+/*
+ * When the IOMMU runs in Secure TDX Mode, the TDX module owns the
+ * MSB-tagged half of the domain ID space. Confine the host to the
+ * lower half, failing if any upper-half DID is already in use.
+ */
+static int dmar_tdxc_reserve_did(struct intel_iommu *iommu)
+{
+	unsigned long ndoms = cap_ndoms(iommu->cap);
+
+	guard(mutex)(&iommu->did_lock);
+	if (ida_find_first_range(&iommu->domain_ida, ndoms >> 1, ndoms - 1) >= 0)
+		return -EBUSY;
+
+	iommu->max_domain_id = ndoms >> 1;
+	return 0;
+}
+
+static void dmar_tdxc_unreserve_did(struct intel_iommu *iommu)
+{
+	guard(mutex)(&iommu->did_lock);
+	iommu->max_domain_id = cap_ndoms(iommu->cap);
+}
+
+static void dmar_tdxc_set_acquired(struct intel_iommu *iommu, bool acquired)
+{
+	guard(raw_spinlock_irqsave)(&iommu->register_lock);
+	iommu->tdxc_acquired = acquired;
+}
+
+static struct dmar_drhd_unit *dmar_tdxc_find_drhd(struct pci_dev *pdev)
+{
+	struct dmar_drhd_unit *drhd;
+
+	if (!intel_iommu_enabled)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	guard(rwsem_read)(&dmar_global_lock);
+
+	drhd = dmar_find_matched_drhd_unit(pdev);
+	if (!drhd || drhd->ignored || !drhd->iommu)
+		return ERR_PTR(-ENODEV);
+
+	if (!ecap_tdxcs(drhd->iommu->ecap))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	return drhd;
+}
+
+/*
+ * dmar_tdxc_get_params() - Get the IOMMU information for a device
+ * @dev: PCI device that will use trusted DMA
+ * @params: Filled in on success
+ *
+ * Look up the IOMMU that translates @dev and return what tdx-host needs
+ * to issue TDH.IOMMU.SETUP and TDH.IOMMU.CLEAR on it. This only reads
+ * information and doesn't change any state. Devices behind the same
+ * IOMMU get the same @params->reg_base_addr.
+ *
+ * Return 0 on success and error code on failure.
+ */
+int dmar_tdxc_get_params(struct pci_dev *pdev, struct dmar_tdxc_params *params)
+{
+	struct dmar_drhd_unit *drhd = dmar_tdxc_find_drhd(pdev);
+
+	if (IS_ERR(drhd))
+		return PTR_ERR(drhd);
+
+	dmar_tdxc_fill_params(drhd, params);
+
+	return 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_get_params, "tdx-host");
+
+/*
+ * dmar_tdxc_acquire() - Acquire an IOMMU for TDH.IOMMU.SETUP
+ * @dev: PCI device that will use trusted DMA
+ * @params: Returned by dmar_tdxc_get_params() for @dev
+ *
+ * Call this right before issuing TDH.IOMMU.SETUP for the first user of
+ * the IOMMU. On success, the caller must issue TDH.IOMMU.SETUP and call
+ * dmar_tdxc_release() if it fails. The caller owns the per-IOMMU refcount
+ * and must serialize all calls for the same IOMMU.
+ *
+ * Return: 0 on success and error code on failure.
+ */
+int dmar_tdxc_acquire(struct pci_dev *pdev,
+		      const struct dmar_tdxc_params *params)
+{
+	struct dmar_drhd_unit *drhd = params->drhd;
+	struct intel_iommu *iommu = drhd->iommu;
+	int ret;
+
+	if (WARN_ON(dmar_tdxc_find_drhd(pdev) != drhd))
+		return -EINVAL;
+
+	guard(mutex)(&drhd->tdxc_lock);
+	/* Still set if TDH.IOMMU.CLEAR failed and tdx-host was reloaded. */
+	if (iommu->tdxc_acquired)
+		return -EBUSY;
+
+	/*
+	 * TDH.IOMMU.SETUP requires DMA translation, queued invalidation and
+	 * scalable mode to be enabled. Catch these here so the error is
+	 * -EINVAL rather than an opaque TDX_IOMMU_INVALID_STATE.
+	 */
+	if (!(iommu->gcmd & DMA_GCMD_TE) || !iommu->qi || !sm_supported(iommu))
+		return -EINVAL;
+
+	ret = dmar_tdxc_reserve_did(iommu);
+	if (ret)
+		return ret;
+
+	dmar_tdxc_set_acquired(iommu, true);
+
+	return 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_acquire, "tdx-host");
+
+/*
+ * dmar_tdxc_release() - Take an IOMMU out of Secure TDX Mode
+ * @dev: PCI device whose IOMMU was acquired via dmar_tdxc_acquire()
+ * @params: Returned by dmar_tdxc_get_params() for @dev
+ *
+ * Call this if TDH.IOMMU.SETUP fails, or for the last user of the IOMMU
+ * after TDH.IOMMU.CLEAR has succeeded.
+ */
+void dmar_tdxc_release(struct pci_dev *pdev,
+		       const struct dmar_tdxc_params *params)
+{
+	struct dmar_drhd_unit *drhd = params->drhd;
+
+	if (WARN_ON(dmar_tdxc_find_drhd(pdev) != drhd))
+		return;
+
+	guard(mutex)(&drhd->tdxc_lock);
+	if (WARN_ON(!drhd->iommu->tdxc_acquired))
+		return;
+
+	dmar_tdxc_set_acquired(drhd->iommu, false);
+	dmar_tdxc_unreserve_did(drhd->iommu);
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_release, "tdx-host");
