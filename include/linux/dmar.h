@@ -47,8 +47,31 @@ struct dmar_drhd_unit {
 	u8	ignored:1; 		/* ignore drhd		*/
 	u8	include_all:1;
 	u8	gfx_dedicated:1;	/* graphic dedicated	*/
+	struct mutex tdxc_lock;		/* serializes acquire/release */
 	struct intel_iommu *iommu;
 };
+
+/*
+ * struct dmar_tdxc_params - IOMMU information for driving TDH.IOMMU.*
+ * @reg_base_addr: Register base address of the IOMMU. The TDX module
+ *		   identifies an IOMMU by it.
+ * @node: NUMA node of the IOMMU, for allocating the TDX module's
+ *	  metadata pages local to it.
+ * @drhd: VT-d internal handle; the caller must not dereference it. It
+ *	  stays valid for the lifetime of the system because TDX
+ *	  Connect-capable units are never hot-removed.
+ */
+struct dmar_tdxc_params {
+	u64 reg_base_addr;
+	int node;
+	struct dmar_drhd_unit *drhd;
+};
+
+int dmar_tdxc_get_params(struct pci_dev *pdev, struct dmar_tdxc_params *params);
+int dmar_tdxc_acquire(struct pci_dev *pdev,
+		      const struct dmar_tdxc_params *params);
+void dmar_tdxc_release(struct pci_dev *pdev,
+		       const struct dmar_tdxc_params *params);
 
 struct dmar_pci_path {
 	u8 bus;
