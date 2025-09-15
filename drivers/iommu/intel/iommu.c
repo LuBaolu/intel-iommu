@@ -4227,6 +4227,16 @@ int ecmd_submit_sync(struct intel_iommu *iommu, u8 ecmd, u64 oa, u64 ob)
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
 
+	/*
+	 * TDH.IOMMU.SETUP requires that no enhanced command is in
+	 * progress. This may be called from atomic context (e.g. perf
+	 * pmu::start/stop), so don't sleep; just reject the request.
+	 */
+	if (iommu->ecmd_blocked) {
+		ret = -EBUSY;
+		goto err;
+	}
+
 	res = readq(iommu->reg + DMAR_ECRSP_REG);
 	if (res & DMA_ECMD_ECRSP_IP) {
 		ret = -EBUSY;
