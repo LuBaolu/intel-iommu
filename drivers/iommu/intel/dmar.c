@@ -431,6 +431,7 @@ static int dmar_parse_one_drhd(struct acpi_dmar_header *header, void *arg)
 	/* The size of the register set is 2 ^ N 4 KB pages. */
 	dmaru->reg_size = 1UL << (drhd->size + 12);
 	dmaru->include_all = drhd->flags & 0x1; /* BIT0: INCLUDE_ALL */
+	dmaru->node = NUMA_NO_NODE;
 	dmaru->devices = dmar_alloc_dev_scope((void *)(drhd + 1),
 					      ((void *)drhd) + drhd->header.length,
 					      &dmaru->devices_cnt);
@@ -499,6 +500,7 @@ static int dmar_parse_one_rhsa(struct acpi_dmar_header *header, void *arg)
 
 			if (node != NUMA_NO_NODE && !node_online(node))
 				node = NUMA_NO_NODE;
+			drhd->node = node;
 			drhd->iommu->node = node;
 			return 0;
 		}
@@ -2296,6 +2298,10 @@ static int dmar_hp_remove_drhd(struct acpi_dmar_header *header, void *arg)
 			return -EBUSY;
 	}
 
+	/* The TDX module holds references to this unit's resources. */
+	if (dmaru->tdx_mode)
+		return -EBUSY;
+
 	ret = dmar_ir_hotplug(dmaru, false);
 	if (ret == 0)
 		ret = dmar_iommu_hotplug(dmaru, false);
@@ -2468,3 +2474,100 @@ bool dmar_platform_optin(void)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(dmar_platform_optin);
+
+static int dmar_tdxcs_block_ecmd(struct intel_iommu *iommu)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	if (!cap_ecmds(iommu->cap))
+		return 0;
+
+	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	if (readq(iommu->reg + DMAR_ECRSP_REG) & DMA_ECMD_ECRSP_IP)
+		ret = -EBUSY;
+	else
+		iommu->ecmd_blocked = true;
+	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
+
+	return ret;
+}
+
+static void dmar_tdxcs_unblock_ecmd(struct intel_iommu *iommu)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	iommu->ecmd_blocked = false;
+	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
+}
+
+int dmar_tdxcs_iommu_init_all(int (*setup)(struct dmar_drhd_unit *))
+{
+	struct dmar_drhd_unit *drhd;
+	int ret;
+
+	if (!intel_iommu_enabled)
+		return -EOPNOTSUPP;
+
+	guard(rwsem_write)(&dmar_global_lock);
+
+	for_each_active_drhd_unit(drhd) {
+		struct intel_iommu *iommu = drhd->iommu;
+		unsigned long ndoms;
+
+		if (!ecap_tdxcs(iommu->ecap))
+			continue;
+
+		/*
+		 * TDH.IOMMU.SETUP requires the unit not to be in Secure TDX
+		 * Mode yet, with DMA translation, queued invalidation and
+		 * scalable mode enabled. Catch these here so the error is
+		 * -EINVAL rather than an opaque TDX_IOMMU_INVALID_STATE.
+		 */
+		if (drhd->tdx_mode || !(iommu->gcmd & DMA_GCMD_TE) ||
+		    !iommu->qi || !sm_supported(iommu))
+			return -EINVAL;
+
+		ndoms = cap_ndoms(iommu->cap);
+		scoped_guard(mutex, &iommu->did_lock) {
+			if (ida_find_first_range(&iommu->domain_ida, ndoms >> 1,
+						 ndoms - 1) > 0)
+				return -EBUSY;
+			iommu->max_domain_id = ndoms >> 1;
+		}
+
+		ret = dmar_tdxcs_block_ecmd(iommu);
+		if (!ret) {
+			ret = setup(drhd);
+			dmar_tdxcs_unblock_ecmd(iommu);
+		}
+
+		if (ret) {
+			scoped_guard(mutex, &iommu->did_lock)
+				iommu->max_domain_id = ndoms;
+
+			/* Not covered by this TDX module. Skip it and keep going. */
+			if (ret == -EOPNOTSUPP)
+				continue;
+
+			return ret;
+		}
+
+		drhd->tdx_mode = true;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxcs_iommu_init_all, "tdx-host");
+
+void dmar_tdxcs_iommu_release(struct dmar_drhd_unit *drhd)
+{
+	struct intel_iommu *iommu = drhd->iommu;
+
+	guard(rwsem_write)(&dmar_global_lock);
+	scoped_guard(mutex, &iommu->did_lock)
+		iommu->max_domain_id = cap_ndoms(iommu->cap);
+	drhd->tdx_mode = false;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxcs_iommu_release, "tdx-host");
