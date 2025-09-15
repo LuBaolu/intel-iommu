@@ -431,6 +431,7 @@ static int dmar_parse_one_drhd(struct acpi_dmar_header *header, void *arg)
 	/* The size of the register set is 2 ^ N 4 KB pages. */
 	dmaru->reg_size = 1UL << (drhd->size + 12);
 	dmaru->include_all = drhd->flags & 0x1; /* BIT0: INCLUDE_ALL */
+	mutex_init(&dmaru->tdxc_lock);
 	dmaru->devices = dmar_alloc_dev_scope((void *)(drhd + 1),
 					      ((void *)drhd) + drhd->header.length,
 					      &dmaru->devices_cnt);
@@ -2288,6 +2289,14 @@ static int dmar_hp_remove_drhd(struct acpi_dmar_header *header, void *arg)
 		return 0;
 
 	/*
+	 * TDX Connect-capable units are never hot-removed: tdx-host may hold
+	 * a pointer to this unit and the TDX module may own its trusted DMA
+	 * resources.
+	 */
+	if (dmaru->iommu && ecap_tdxcs(dmaru->iommu->ecap))
+		return -EBUSY;
+
+	/*
 	 * All PCI devices managed by this unit should have been destroyed.
 	 */
 	if (!dmaru->include_all && dmaru->devices && dmaru->devices_cnt) {
@@ -2317,6 +2326,24 @@ static int dmar_hp_release_drhd(struct acpi_dmar_header *header, void *arg)
 	return 0;
 }
 
+static int dmar_hp_check_tdxc(struct acpi_dmar_header *header, void *arg)
+{
+	struct dmar_drhd_unit *dmaru;
+
+	dmaru = dmar_find_dmaru((struct acpi_dmar_hardware_unit *)header);
+	if (!dmaru || !dmaru->iommu || !ecap_tdxcs(dmaru->iommu->ecap))
+		return 0;
+
+	/*
+	 * No platform currently supports both TDX Connect and DMAR hotplug,
+	 * so TDX Connect on a hot-added IOMMU cannot be validated on real
+	 * hardware. Reject it.
+	 */
+	pr_info("%s: hot-adding an IOMMU with TDX Connect support is not supported\n",
+		dmaru->iommu->name);
+	return -EOPNOTSUPP;
+}
+
 static int dmar_hotplug_insert(acpi_handle handle)
 {
 	int ret;
@@ -2343,6 +2370,11 @@ static int dmar_hotplug_insert(acpi_handle handle)
 
 	ret = dmar_walk_dsm_resource(handle, DMAR_DSM_FUNC_ATSR,
 				     &dmar_parse_one_atsr, NULL);
+	if (ret)
+		goto release_atsr;
+
+	ret = dmar_walk_dsm_resource(handle, DMAR_DSM_FUNC_DRHD,
+				     &dmar_hp_check_tdxc, NULL);
 	if (ret)
 		goto release_atsr;
 
@@ -2468,3 +2500,220 @@ bool dmar_platform_optin(void)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(dmar_platform_optin);
+
+static void dmar_tdxc_fill_params(struct dmar_drhd_unit *drhd,
+				  struct dmar_tdxc_params *params)
+{
+	params->reg_base_addr = drhd->reg_base_addr;
+	params->node = drhd->iommu->node;
+	/*
+	 * params->drhd stays valid because TDX Connect-capable units are
+	 * never hot-removed.
+	 */
+	params->drhd = drhd;
+}
+
+/*
+ * When the IOMMU runs in Secure TDX Mode, the TDX module owns the
+ * MSB-tagged half of the domain ID space. Confine the host to the
+ * lower half, failing if any upper-half DID is already in use.
+ */
+static int dmar_tdxc_reserve_did(struct intel_iommu *iommu)
+{
+	unsigned long ndoms = cap_ndoms(iommu->cap);
+
+	guard(mutex)(&iommu->did_lock);
+	if (ida_find_first_range(&iommu->domain_ida, ndoms >> 1, ndoms - 1) >= 0)
+		return -EBUSY;
+
+	iommu->max_domain_id = ndoms >> 1;
+	return 0;
+}
+
+static void dmar_tdxc_unreserve_did(struct intel_iommu *iommu)
+{
+	guard(mutex)(&iommu->did_lock);
+	iommu->max_domain_id = cap_ndoms(iommu->cap);
+}
+
+static int dmar_tdxc_block_ecmd(struct intel_iommu *iommu)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	if (!cap_ecmds(iommu->cap))
+		return 0;
+
+	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	if (readq(iommu->reg + DMAR_ECRSP_REG) & DMA_ECMD_ECRSP_IP)
+		ret = -EBUSY;
+	else
+		iommu->ecmd_blocked = true;
+	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
+
+	return ret;
+}
+
+static void dmar_tdxc_unblock_ecmd(struct intel_iommu *iommu)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	iommu->ecmd_blocked = false;
+	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
+}
+
+static struct dmar_drhd_unit *dmar_tdxc_find_drhd(struct pci_dev *pdev)
+{
+	struct dmar_drhd_unit *drhd;
+
+	if (!intel_iommu_enabled)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	guard(rwsem_read)(&dmar_global_lock);
+
+	drhd = dmar_find_matched_drhd_unit(pdev);
+	if (!drhd || drhd->ignored || !drhd->iommu)
+		return ERR_PTR(-ENODEV);
+
+	if (!ecap_tdxcs(drhd->iommu->ecap))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	return drhd;
+}
+
+/*
+ * dmar_tdxc_get_params() - Get the IOMMU information for a device
+ * @dev: PCI device that will use trusted DMA
+ * @params: Filled in on success
+ *
+ * Look up the IOMMU that translates @dev and return what tdx-host needs
+ * to issue TDH.IOMMU.SETUP and TDH.IOMMU.CLEAR on it. This only reads
+ * information and doesn't change any state. Devices behind the same
+ * IOMMU get the same @params->reg_base_addr.
+ *
+ * Return 0 on success and error code on failure.
+ */
+int dmar_tdxc_get_params(struct pci_dev *pdev, struct dmar_tdxc_params *params)
+{
+	struct dmar_drhd_unit *drhd = dmar_tdxc_find_drhd(pdev);
+
+	if (IS_ERR(drhd))
+		return PTR_ERR(drhd);
+
+	dmar_tdxc_fill_params(drhd, params);
+
+	return 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_get_params, "tdx-host");
+
+/*
+ * dmar_tdxc_init_prepare() - Prepare an IOMMU for TDH.IOMMU.SETUP
+ * @dev: PCI device that will use trusted DMA
+ * @params: Returned by dmar_tdxc_get_params() for @dev
+ *
+ * Call this right before issuing TDH.IOMMU.SETUP for the first user of
+ * the IOMMU. On success, the caller must issue TDH.IOMMU.SETUP and then
+ * call dmar_tdxc_init_done() whether or not the SEAMCALL succeeds. The
+ * caller owns the per-IOMMU refcount and must serialize all calls for the
+ * same IOMMU.
+ *
+ * Return: 0 on success and error code on failure.
+ */
+int dmar_tdxc_init_prepare(struct pci_dev *pdev,
+			   const struct dmar_tdxc_params *params)
+{
+	struct dmar_drhd_unit *drhd = params->drhd;
+	struct intel_iommu *iommu = drhd->iommu;
+	int ret;
+
+	if (WARN_ON(dmar_tdxc_find_drhd(pdev) != drhd))
+		return -EINVAL;
+
+	guard(mutex)(&drhd->tdxc_lock);
+	if (WARN_ON(drhd->tdxc_state != DMAR_TDXC_DISABLED))
+		return -EBUSY;
+
+	/*
+	 * TDH.IOMMU.SETUP requires DMA translation, queued invalidation and
+	 * scalable mode to be enabled. Catch these here so the error is
+	 * -EINVAL rather than an opaque TDX_IOMMU_INVALID_STATE.
+	 */
+	if (!(iommu->gcmd & DMA_GCMD_TE) || !iommu->qi || !sm_supported(iommu))
+		return -EINVAL;
+
+	ret = dmar_tdxc_reserve_did(iommu);
+	if (ret)
+		return ret;
+
+	ret = dmar_tdxc_block_ecmd(iommu);
+	if (ret) {
+		dmar_tdxc_unreserve_did(iommu);
+		return ret;
+	}
+
+	drhd->tdxc_state = DMAR_TDXC_LOCKED;
+
+	return 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_init_prepare, "tdx-host");
+
+/*
+ * dmar_tdxc_init_done() - Complete TDH.IOMMU.SETUP on an IOMMU
+ * @dev: Same device passed to dmar_tdxc_init_prepare()
+ * @params: Same parameters passed to dmar_tdxc_init_prepare()
+ * @success: Whether TDH.IOMMU.SETUP succeeded
+ *
+ * Call this once after every successful dmar_tdxc_init_prepare(), once
+ * TDH.IOMMU.SETUP returns.
+ */
+void dmar_tdxc_init_done(struct pci_dev *pdev,
+			 const struct dmar_tdxc_params *params,
+			 bool success)
+{
+	struct dmar_drhd_unit *drhd = params->drhd;
+	struct intel_iommu *iommu = drhd->iommu;
+
+	if (WARN_ON(dmar_tdxc_find_drhd(pdev) != drhd))
+		return;
+
+	guard(mutex)(&drhd->tdxc_lock);
+	if (WARN_ON(drhd->tdxc_state != DMAR_TDXC_LOCKED))
+		return;
+
+	dmar_tdxc_unblock_ecmd(iommu);
+
+	if (success) {
+		drhd->tdxc_state = DMAR_TDXC_ENABLED;
+		return;
+	}
+
+	dmar_tdxc_unreserve_did(iommu);
+	drhd->tdxc_state = DMAR_TDXC_DISABLED;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_init_done, "tdx-host");
+
+/*
+ * dmar_tdxc_release() - Take an IOMMU out of Secure TDX Mode
+ * @dev: PCI device whose IOMMU was enabled via dmar_tdxc_init_done()
+ * @params: Returned by dmar_tdxc_get_params() for @dev
+ *
+ * Call this for the last user of the IOMMU, and only after
+ * TDH.IOMMU.CLEAR has succeeded.
+ */
+void dmar_tdxc_release(struct pci_dev *pdev,
+		       const struct dmar_tdxc_params *params)
+{
+	struct dmar_drhd_unit *drhd = params->drhd;
+
+	if (WARN_ON(dmar_tdxc_find_drhd(pdev) != drhd))
+		return;
+
+	guard(mutex)(&drhd->tdxc_lock);
+	if (WARN_ON(drhd->tdxc_state != DMAR_TDXC_ENABLED))
+		return;
+
+	dmar_tdxc_unreserve_did(drhd->iommu);
+	drhd->tdxc_state = DMAR_TDXC_DISABLED;
+}
+EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_release, "tdx-host");
