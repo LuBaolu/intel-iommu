@@ -50,6 +50,17 @@
 
 #define RHI_DA_VDEV_CONTINUE		SMC_RHI_CALL(0x0051)
 
+#define RHI_VDEV_MEASURE_HASH	0x0
+#define RHI_VDEV_MEASURE_RAW	0x1
+struct rhi_vdev_measurement_params {
+	union {
+		u64 flags;
+		u8 padding0[0x100];
+	};
+	u8 nonce[32];
+};
+#define RHI_DA_VDEV_GET_MEASUREMENTS	SMC_RHI_CALL(0x0052)
+
 #define RHI_DA_VDEV_GET_INTERFACE_REPORT SMC_RHI_CALL(0x0053)
 
 enum rhi_tdi_state {
