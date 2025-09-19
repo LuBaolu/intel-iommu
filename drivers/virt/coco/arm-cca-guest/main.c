@@ -190,6 +190,7 @@ static struct pci_tsm *cca_tsm_lock(struct tsm_dev *tsm_dev, struct pci_dev *pde
 	if (ret)
 		return ERR_PTR(ret);
 
+	/* collect evidence without nonce */
 	ret = cca_update_device_object_cache(pdev, NULL);
 	if (ret) {
 		cca_device_unlock(pdev);

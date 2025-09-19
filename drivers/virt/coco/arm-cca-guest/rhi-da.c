@@ -205,3 +205,81 @@ int rhi_update_vdev_interface_report_cache(struct pci_dev *pdev)
 
 	return ret;
 }
+
+static inline int rhi_vdev_get_measurements(unsigned long vdev_id,
+		phys_addr_t vdev_meas_phys, unsigned long *cookie)
+{
+	unsigned long ret;
+
+	struct rsi_host_call *rhi_call __free(kfree) =
+		kzalloc(sizeof(*rhi_call), GFP_KERNEL);
+	if (!rhi_call)
+		return -ENOMEM;
+
+	rhi_call->imm = 0;
+	rhi_call->gprs[0] = RHI_DA_VDEV_GET_MEASUREMENTS;
+	rhi_call->gprs[1] = vdev_id;
+	rhi_call->gprs[2] = vdev_meas_phys;
+
+	ret = rsi_host_call(rhi_call);
+	if (ret != RSI_SUCCESS)
+		return -EIO;
+
+	*cookie = rhi_call->gprs[1];
+	return map_rhi_da_error(rhi_call->gprs[0]);
+}
+
+static inline struct rhi_vdev_measurement_params *alloc_vdev_meas_params(void)
+{
+	struct page *pages;
+
+	pages = alloc_shared_pages(NUMA_NO_NODE, GFP_KERNEL,
+				   sizeof(struct rhi_vdev_measurement_params));
+	if (!pages)
+		return NULL;
+	return page_address(pages);
+}
+
+static inline void vdev_meas_params_free(struct rhi_vdev_measurement_params *params)
+{
+	struct page *pages = virt_to_page(params);
+
+	free_shared_pages(pages, sizeof(struct rhi_vdev_measurement_params));
+}
+
+DEFINE_FREE(vdev_meas_params_free, struct rhi_vdev_measurement_params *, if (_T) vdev_meas_params_free(_T))
+int rhi_update_vdev_measurements_cache(struct pci_dev *pdev, const u8 *nonce)
+{
+	int ret;
+	unsigned long cookie;
+	int vdev_id = rsi_vdev_id(pdev);
+	phys_addr_t vdev_meas_phys;
+
+	struct rhi_vdev_measurement_params *dev_meas __free(vdev_meas_params_free) =
+		alloc_vdev_meas_params();
+	if (!dev_meas)
+		return -ENOMEM;
+
+	vdev_meas_phys = virt_to_phys(dev_meas);
+	/* request for raw bitstream */
+	dev_meas->flags = RHI_VDEV_MEASURE_RAW;
+	if (nonce)
+		memcpy(dev_meas->nonce, nonce, 32);
+
+	for (;;) {
+		ret = rhi_vdev_get_measurements(vdev_id, vdev_meas_phys, &cookie);
+		if (ret != -EBUSY)
+			break;
+		cond_resched();
+	}
+
+	while (ret == RHI_DA_INCOMPLETE) {
+		if (should_abort_rhi_call_loop(vdev_id))
+			return -EINTR;
+		ret = rhi_vdev_continue(vdev_id, cookie);
+	}
+
+	if (ret)
+		pci_err(pdev, "failed to get device measurement (%d)\n", ret);
+	return ret;
+}
