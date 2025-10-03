@@ -232,10 +232,18 @@ int cca_verify_digests(u64 hash_algo,
 	return 0;
 }
 
+static inline int rsi_vdev_enable_dma(int vdev_id, struct dsm_device_info *dev_info)
+{
+	/* No ATS support */
+	return __rsi_vdev_dma_enable(vdev_id, 0, 0, dev_info->lock_nonce,
+				     dev_info->meas_nonce, dev_info->report_nonce);
+}
+
 int cca_device_accept(struct pci_dev *pdev, unsigned long lock_nonce)
 {
 	int ret;
 	struct pci_tsm_mmio *tsm_mmio;
+	int vdev_id = rsi_vdev_id(pdev);
 	struct cca_guest_dsc *dsc = to_cca_guest_dsc(pdev);
 
 	if (lock_nonce != dsc->dev_info.lock_nonce) {
@@ -271,6 +279,9 @@ int cca_device_accept(struct pci_dev *pdev, unsigned long lock_nonce)
 		pci_err(pdev, "failed to switch the device (%u) to RUN state\n", ret);
 		goto err_tdi_config_run;
 	}
+
+	if (rsi_vdev_enable_dma(vdev_id, &dsc->dev_info))
+		pci_err(pdev, "failed to enable DMA from the device\n");
 
 	dsc->pci.mmio = no_free_ptr(tsm_mmio);
 	return 0;
