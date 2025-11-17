@@ -1,0 +1,96 @@
+coco/TSM: Arm CCA guest TDISP lock/accept flow with verification and DMA enable
+
+This patch series implements the TSM ->lock(), ->unlock(), and ->accept()
+callbacks required for the TDISP setup with Arm CCA as per as per the RMM
+2.0bet1 specification [1].
+
+The series adds the guest-side DA plumbing needed to transition a device
+through TDI LOCK and RUN states, verify host-provided evidence against
+RMM-provided digests, validate interface-report MMIO mappings, and enable
+DMA only after attestation succeeds.
+
+At a high level, the series includes:
+- guest TSM callback registration and lock/unlock/accept hooks
+- RHI DA helper support for TDI state transitions and object refresh
+- host-cached DA object fetch APIs in guest
+- RSI_VDEV_GET_INFO digest verification of certificate/VCA/report/measurement
+- mapping validation for interface-report ranges and teardown on unlock
+- DMA behavior updates for accepted devices (including swiotlb restrictions)
+- vdev DMA enable after successful attestation
+
+The series builds upon the TSM framework patches posted at [2]. A git repository
+containing all the related changes is available at [3].
+
+Testing / Usage
+
+echo ${DEVICE} > /sys/bus/pci/devices/${DEVICE}/driver/unbind
+
+To transition the device to TDISP LOCK state:
+echo tsm0 > /sys/bus/pci/devices/${DEVICE}/tsm/lock
+
+To transition the device to TDISP RUN state:
+echo 1 > /sys/bus/pci/devices/${DEVICE}/tsm/accept
+
+echo ${DEVICE} > /sys/bus/pci/drivers_probe
+
+Changes from v3:
+https://lore.kernel.org/all/20260312080442.3485633-1-aneesh.kumar@kernel.org
+* updated the patches to follow the RMM 2.0bet1 specification
+* updated the guest-side DA code to use the renamed identity/protocol digest
+  fields and id_index
+
+Changes from v2:
+rfc-v2: https://lore.kernel.org/all/20251117140007.122062-1-aneesh.kumar@kernel.org
+* rebase to latest kernel and core TSM changes
+* Address review feedback.
+* Interface report is now collected using core TSM framework
+* swiotlb is now considered shared-memory pool and is not allowed to be used by accepted devices.
+
+v1:
+rfc-v1: https://lore.kernel.org/all/20250728135216.48084-1-aneesh.kumar@kernel.org
+
+[1] https://developer.arm.com/documentation/den0137/2-0bet1/
+[2] https://lore.kernel.org/all/20260303000207.1836586-1-dan.j.williams@intel.com
+[3] https://gitlab.arm.com/linux-arm/linux-cca.git cca/topics/cca-tdisp-upstream-rfc-v4
+
+Cc: Alex Williamson <alex@shazbot.org>
+Cc: Alexey Kardashevskiy <aik@amd.com>
+Cc: Bjorn Helgaas <bhelgaas@google.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: H. Peter Anvin <hpa@zytor.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Joerg Roedel <joro@8bytes.org>
+Cc: Jonathan Cameron <jic23@kernel.org>
+Cc: Jonathan Hunter <jonathanh@nvidia.com>
+Cc: Kevin Tian <kevin.tian@intel.com>
+Cc: Krishna Reddy <vdumpa@nvidia.com>
+Cc: Lukas Wunner <lukas@wunner.de>
+Cc: Nicolin Chen <nicolinc@nvidia.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Robin Murphy <robin.murphy@arm.com>
+Cc: Samuel Ortiz <sameo@rivosinc.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shameer Kolothum <shameerali.kolothum.thodi@huawei.com>
+Cc: Steffen Eiden <seiden@linux.ibm.com>
+Cc: Steven Price <steven.price@arm.com>
+Cc: Suravee Suthikulpanit <suravee.suthikulpanit@amd.com>
+Cc: Suzuki K Poulose <suzuki.poulose@arm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Thierry Reding <thierry.reding@kernel.org>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Tony Krowiak <akrowiak@linux.ibm.com>
+Cc: Vasant Hegde <vasant.hegde@amd.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Xu Yilun <yilun.xu@linux.intel.com>
+Cc: kvm@vger.kernel.org
+Cc: linux-arm-kernel@lists.infradead.org
+Cc: linux-coco@lists.linux.dev
+Cc: linux-doc@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-pci@vger.kernel.org
+Cc: linux-s390@vger.kernel.org
+Cc: linux-tegra@vger.kernel.org
+Cc: x86@kernel.org
