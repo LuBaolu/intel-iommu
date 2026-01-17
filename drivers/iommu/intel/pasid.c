@@ -21,11 +21,174 @@
 #include "iommu.h"
 #include "pasid.h"
 #include "../iommu-pages.h"
+#include "../entry_sync.h"
 
 /*
  * Intel IOMMU system wide PASID name space:
  */
 u32 intel_pasid_max_id = PASID_MAX;
+
+/*
+ * Plumb into the generic entry_sync library:
+ */
+static struct pasid_entry *intel_pasid_get_entry(struct device *dev, u32 pasid);
+static void pasid_flush_caches(struct intel_iommu *iommu, struct pasid_entry *pte,
+			       u32 pasid, u16 did);
+static void intel_pasid_flush_present(struct intel_iommu *iommu, struct device *dev,
+				      u32 pasid, u16 did, struct pasid_entry *pte);
+static void pasid_cache_invalidation_with_pasid(struct intel_iommu *iommu,
+						u16 did, u32 pasid);
+static void devtlb_invalidation_with_pasid(struct intel_iommu *iommu,
+					   struct device *dev, u32 pasid);
+
+struct intel_pasid_writer {
+	struct entry_sync_writer128 writer;
+	struct intel_iommu *iommu;
+	struct device *dev;
+	u32 pasid;
+	struct pasid_entry orig_pte;
+	bool was_present;
+};
+
+/*
+ * Identify which bits of the 256-bit entry the HW is using. The "Used" bits
+ * are those that, if changed, would cause the IOMMU to behave differently
+ * for an active transaction.
+ */
+static void intel_pasid_get_used(const u128 *entry, u128 *used)
+{
+	struct pasid_entry *pe = (struct pasid_entry *)entry;
+	struct pasid_entry *ue = (struct pasid_entry *)used;
+	u16 pgtt;
+
+	/* Initialize used bits to 0. */
+	memset(ue, 0, sizeof(*ue));
+
+	/* Present bit always matters. */
+	ue->val[0] |= SM_PASID0_P;
+
+	/* Nothing more for non-present entries. */
+	if (!(pe->val[0] & SM_PASID0_P))
+		return;
+
+	pgtt = pasid_pte_get_pgtt(pe);
+	switch (pgtt) {
+	case PASID_ENTRY_PGTT_FL_ONLY:
+		ue->val[0] |= SM_PASID0_AW | SM_PASID0_PGTT;
+		ue->val[1] |= SM_PASID1_DID | SM_PASID1_PWSNP | SM_PASID1_PGSNP;
+		ue->val[2] |= SM_PASID2_FSPTPTR | SM_PASID2_FSPM;
+		break;
+	case PASID_ENTRY_PGTT_NESTED:
+		ue->val[0] |= SM_PASID0_FPD | SM_PASID0_AW | SM_PASID0_PGTT |
+				SM_PASID0_SSADE | SM_PASID0_SSPTPTR;
+		ue->val[1] |= SM_PASID1_DID | SM_PASID1_PWSNP | SM_PASID1_PGSNP;
+		ue->val[2] |= SM_PASID2_SRE | SM_PASID2_WPE | SM_PASID2_EAFE |
+				SM_PASID2_FSPM | SM_PASID2_FSPTPTR;
+		break;
+	case PASID_ENTRY_PGTT_SL_ONLY:
+		ue->val[0] |= SM_PASID0_FPD | SM_PASID0_AW | SM_PASID0_PGTT |
+				SM_PASID0_SSADE | SM_PASID0_SSPTPTR;
+		ue->val[1] |= SM_PASID1_DID | SM_PASID1_PWSNP | SM_PASID1_PGSNP;
+		break;
+	case PASID_ENTRY_PGTT_PT:
+		ue->val[0] |= SM_PASID0_FPD | SM_PASID0_AW | SM_PASID0_PGTT;
+		ue->val[1] |= SM_PASID1_DID | SM_PASID1_PWSNP | SM_PASID1_PGSNP;
+		break;
+	default:
+		WARN_ON(true);
+	}
+}
+
+static void intel_pasid_sync(struct entry_sync_writer128 *writer)
+{
+	struct intel_pasid_writer *p_writer = container_of(writer,
+			struct intel_pasid_writer, writer);
+	struct intel_iommu *iommu = p_writer->iommu;
+	struct device *dev = p_writer->dev;
+	bool was_present, is_present;
+	u32 pasid = p_writer->pasid;
+	struct pasid_entry *pte;
+	u16 old_did, old_pgtt;
+
+	pte = intel_pasid_get_entry(dev, pasid);
+	was_present = p_writer->was_present;
+	is_present = pasid_pte_is_present(pte);
+	old_did = pasid_get_domain_id(&p_writer->orig_pte);
+	old_pgtt = pasid_pte_get_pgtt(&p_writer->orig_pte);
+
+	/* Update the last present state: */
+	p_writer->was_present = is_present;
+
+	if (!ecap_coherent(iommu->ecap))
+		clflush_cache_range(pte, sizeof(*pte));
+
+	/* Sync for "P=0" to "P=1": */
+	if (!was_present) {
+		if (is_present)
+			pasid_flush_caches(iommu, pte, pasid,
+					   pasid_get_domain_id(pte));
+
+		return;
+	}
+
+	/* Sync for "P=1" to "P=1": */
+	if (is_present) {
+		intel_pasid_flush_present(iommu, dev, pasid, old_did, pte);
+		return;
+	}
+
+	/* Sync for "P=1" to "P=0": */
+	pasid_cache_invalidation_with_pasid(iommu, old_did, pasid);
+
+	if (old_pgtt == PASID_ENTRY_PGTT_PT || old_pgtt == PASID_ENTRY_PGTT_FL_ONLY)
+		qi_flush_piotlb_all(iommu, old_did, pasid);
+	else
+		iommu->flush.flush_iotlb(iommu, old_did, 0, 0, DMA_TLB_DSI_FLUSH);
+
+	devtlb_invalidation_with_pasid(iommu, dev, pasid);
+}
+
+static const struct entry_sync_writer_ops128 writer_ops128 = {
+	.get_used = intel_pasid_get_used,
+	.sync = intel_pasid_sync,
+};
+
+#define INTEL_PASID_SYNC_MEM_COUNT	12
+
+static int __maybe_unused intel_pasid_write(struct intel_iommu *iommu,
+					    struct device *dev, u32 pasid,
+					    u128 *target)
+{
+	struct pasid_entry *pte = intel_pasid_get_entry(dev, pasid);
+	struct intel_pasid_writer p_writer = {
+		.writer = {
+			.ops = &writer_ops128,
+			/* 512 bits total (4 * 128-bit chunks) */
+			.num_quantas = 4,
+			/* The 'P' bit is in the first 128-bit chunk */
+			.vbit_quanta = 0,
+		},
+		.iommu = iommu,
+		.dev = dev,
+		.pasid = pasid,
+	};
+	u128 memory[INTEL_PASID_SYNC_MEM_COUNT];
+
+	if (!pte)
+		return -ENODEV;
+
+	p_writer.orig_pte = *pte;
+	p_writer.was_present = pasid_pte_is_present(pte);
+
+	/*
+	 * The library now does the heavy lifting:
+	 * 1. Checks if it can do a 1-quanta hitless flip.
+	 * 2. If not, it does a 3-step V=0 (disruptive) update.
+	 */
+	entry_sync_write128(&p_writer.writer, (u128 *)pte, target, memory, sizeof(memory));
+
+	return 0;
+}
 
 /*
  * Per device pasid table management:

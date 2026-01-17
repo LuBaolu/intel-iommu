@@ -45,6 +45,27 @@ struct pasid_entry {
 #define PASID_ENTRY_PGTT_NESTED		(3)
 #define PASID_ENTRY_PGTT_PT		(4)
 
+/* 9.6 Scalable-Mode PASID Table Entry */
+#define SM_PASID0_P		BIT_U64(0)
+#define SM_PASID0_FPD		BIT_U64(1)
+#define SM_PASID0_AW		GENMASK_U64(4, 2)
+#define SM_PASID0_PGTT		GENMASK_U64(8, 6)
+#define SM_PASID0_SSADE		BIT_U64(9)
+#define SM_PASID0_SSPTPTR	GENMASK_U64(63, 12)
+
+#define SM_PASID1_DID		GENMASK_U64(15, 0)
+#define SM_PASID1_PWSNP		BIT_U64(23)
+#define SM_PASID1_PGSNP		BIT_U64(24)
+#define SM_PASID1_CD		BIT_U64(25)
+#define SM_PASID1_EMTE		BIT_U64(26)
+#define SM_PASID1_PAT		GENMASK_U64(63, 32)
+
+#define SM_PASID2_SRE		BIT_U64(0)
+#define SM_PASID2_FSPM		GENMASK_U64(3, 2)
+#define SM_PASID2_WPE		BIT_U64(4)
+#define SM_PASID2_EAFE		BIT_U64(7)
+#define SM_PASID2_FSPTPTR	GENMASK_U64(63, 12)
+
 /* The representative of a PASID table */
 struct pasid_table {
 	void			*table;		/* pasid table pointer */
