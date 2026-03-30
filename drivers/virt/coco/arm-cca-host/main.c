@@ -113,6 +113,123 @@ static inline void free_dev_communication_buffers(struct cca_host_comm_data *com
 	free_page((unsigned long)comm_data->io_params);
 }
 
+static int cca_root_port_pdev_create(struct pci_dev *rp, struct tsm_dev *tsm_dev)
+{
+	int ret;
+	struct cca_host_rp_dsc *rp_dsc;
+
+	rp_dsc = kzalloc_obj(*rp_dsc);
+	if (!rp_dsc)
+		return -ENOMEM;
+
+	/* we expect this to be asigned early */
+	rp->tsm = &rp_dsc->pci;
+	rp->tsm->dsm_dev = rp;
+	rp->tsm->pdev = rp;
+	rp->tsm->tsm_dev = tsm_dev;
+	mutex_init(&rp_dsc->pdev.object_lock);
+
+	ret = init_dev_communication_buffers(rp, &rp_dsc->pdev.comm_data);
+	if (ret)
+		goto err_comm_buff;
+
+	ret = cca_pdev_create(rp);
+	if (ret)
+		goto err_pdev_create;
+
+	/*
+	 * device communication is still required even though
+	 * there is not identity collection
+	 */
+	ret = cca_pdev_collect_identity(rp);
+	if (ret)
+		goto pdev_destroy;
+
+	return 0;
+
+pdev_destroy:
+	cca_pdev_stop_and_destroy(rp);
+err_pdev_create:
+	free_dev_communication_buffers(&rp_dsc->pdev.comm_data);
+err_comm_buff:
+	kfree(rp_dsc);
+	rp->tsm = NULL;
+	return ret;
+}
+
+static int pci_dev_addr_range(struct pci_dev *pdev, struct rmi_addr_range *pdev_addr)
+{
+	int naddr = 0;
+	struct pci_dev *br;
+	struct resource *mem, *pref;
+
+	br = pci_upstream_bridge(pdev);
+	if (!br)
+		return 0;
+
+	mem = pci_resource_n(br, PCI_BRIDGE_MEM_WINDOW);
+	pref = pci_resource_n(br, PCI_BRIDGE_PREF_MEM_WINDOW);
+	if (resource_assigned(mem))
+		naddr = insert_addr_range_sorted(pdev_addr, naddr,
+						 mem->start, mem->end + 1);
+	if (resource_assigned(pref))
+		naddr = insert_addr_range_sorted(pdev_addr, naddr,
+						 pref->start, pref->end + 1);
+
+	return naddr;
+}
+
+static int cca_pdev_create_ncoh_stream(struct pci_dev *pdev, unsigned long stream_id)
+{
+	int ret;
+	long stream_handle;
+	struct cca_host_rp_dsc *rp_dsc;
+	struct rmi_pdev_stream_params *params;
+	struct pci_dev *rp = pcie_find_root_port(pdev);
+	struct cca_host_pf0_ep_dsc *pf0_ep_dsc = to_cca_pf0_ep_dsc(pdev);
+
+	if (!rp->tsm) {
+		ret = cca_root_port_pdev_create(rp, pf0_ep_dsc->pci.base_tsm.tsm_dev);
+		if (ret)
+			return ret;
+		rp_dsc = to_cca_rp_dsc(rp);
+	} else {
+		rp_dsc = to_cca_rp_dsc(rp);
+		/* Make sure they use the same TSM */
+		if (rp->tsm->tsm_dev != pf0_ep_dsc->pci.base_tsm.tsm_dev)
+			return -EINVAL;
+	}
+
+
+	params = (struct rmi_pdev_stream_params *)get_zeroed_page(GFP_KERNEL);
+	if (!params)
+		return -ENOMEM;
+
+	params->flags = 0;
+	params->stream_type = RMI_PDEV_STREAM_NCOH;
+	params->pdev_1 = virt_to_phys(pf0_ep_dsc->pdev.rmm_pdev);
+	params->pdev_2 = virt_to_phys(rp_dsc->pdev.rmm_pdev);
+	params->ide_sid = stream_id;
+	params->num_addr_range = pci_dev_addr_range(pdev, params->addr_range);
+
+	ret = cca_pdev_stream_connect(pdev, rp, params, &stream_handle);
+	if (!ret)
+		pf0_ep_dsc->stream_handle = stream_handle;
+
+	free_page((unsigned long)params);
+	return ret;
+}
+
+static int cca_pdev_create_streams(struct pci_dev *pdev, unsigned long stream_id)
+{
+	switch (pci_pcie_type(pdev)) {
+	case PCI_EXP_TYPE_ENDPOINT:
+		return cca_pdev_create_ncoh_stream(pdev, stream_id);
+	default:
+		return -EINVAL;
+	}
+}
+
 static inline bool cca_pdev_need_sel_ide_streams(struct pci_dev *pdev)
 {
 	return pci_pcie_type(pdev) == PCI_EXP_TYPE_ENDPOINT;
@@ -176,6 +293,10 @@ static int __maybe_unused cca_tsm_connect(struct pci_dev *pdev)
 		if (ret)
 			goto pdev_destroy;
 	}
+	/* Create IDE streams */
+	ret = cca_pdev_create_streams(pdev, stream_id);
+	if (ret)
+		goto pdev_destroy;
 	/*
 	 * Once ide is setup, enable the stream at the endpoint
 	 * Root port will be done by RMM
@@ -208,6 +329,7 @@ static void __maybe_unused cca_tsm_disconnect(struct pci_dev *pdev)
 {
 	struct pci_ide *ide;
 	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
+	struct pci_dev *rp = pcie_find_root_port(pdev);
 
 	pf0_ep_dsc = to_cca_pf0_ep_dsc(pdev);
 	if (!pf0_ep_dsc)
@@ -215,6 +337,8 @@ static void __maybe_unused cca_tsm_disconnect(struct pci_dev *pdev)
 
 	if (cca_pdev_need_sel_ide_streams(pdev))
 		ide = pf0_ep_dsc->sel_stream;
+
+	cca_pdev_disconnect_stream(pdev, rp, pf0_ep_dsc->stream_handle);
 
 	cca_pdev_stop_and_destroy(pdev);
 	free_dev_communication_buffers(&pf0_ep_dsc->pdev.comm_data);

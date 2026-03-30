@@ -72,6 +72,7 @@ struct cca_host_pdev_dsc {
  * @pci: Physical Function 0 TDISP link context
  * @pdev: pdev communication context
  * @sel_stream: Selective IDE Stream descriptor
+ * @stream_handle: Stream handle returned by stream connect
  * @rmi_signature_algorithm: Signature algorithm used for public key
  * @cert_chain: cetrificate chain
  * @vca: SPDM's Version-Capabilities-Algorithms cache object
@@ -80,6 +81,7 @@ struct cca_host_pf0_ep_dsc {
 	struct pci_tsm_pf0 pci;
 	struct cca_host_pdev_dsc pdev;
 	struct pci_ide *sel_stream;
+	unsigned long stream_handle;
 
 	char *rmi_signature_algorithm;
 	struct {
@@ -93,6 +95,17 @@ struct cca_host_pf0_ep_dsc {
 	struct cache_object *vca;
 };
 
+/**
+ * struct cca_host_rp_dsc - Root-port pdev context for stream coordination.
+ * @pci: Root-port TSM link context
+ * @pdev: Common pdev communication context
+ * @tsm_ref: Reference count held by connected endpoint streams
+ */
+struct cca_host_rp_dsc {
+	struct pci_tsm pci;
+	struct cca_host_pdev_dsc pdev;
+};
+
 struct cca_host_fn_dsc {
 	struct pci_tsm pci;
 };
@@ -100,6 +113,30 @@ struct cca_host_fn_dsc {
 enum dev_comm_type {
 	PDEV_COMMUNICATE = 0x1,
 };
+
+static inline int insert_addr_range_sorted(struct rmi_addr_range *addr_range,
+		int nr_addr_range, resource_size_t start, resource_size_t top)
+{
+	int index = nr_addr_range;
+
+	while (index > 0) {
+		struct rmi_addr_range *prev = &addr_range[index - 1];
+
+		if (prev->base < start)
+			break;
+
+		if (prev->base == start && prev->top <= top)
+			break;
+
+		addr_range[index] = *prev;
+		index--;
+	}
+
+	addr_range[index].base = start;
+	addr_range[index].top = top;
+
+	return nr_addr_range + 1;
+}
 
 static inline struct cca_host_pf0_ep_dsc *to_cca_pf0_ep_dsc(struct pci_dev *pdev)
 {
@@ -118,13 +155,28 @@ static inline struct cca_host_fn_dsc *to_cca_fn_dsc(struct pci_dev *pdev)
 	return container_of(tsm, struct cca_host_fn_dsc, pci);
 }
 
+static inline struct cca_host_rp_dsc *to_cca_rp_dsc(struct pci_dev *pdev)
+{
+	struct pci_tsm *tsm = pdev->tsm;
+
+	if (!tsm || pci_pcie_type(pdev) != PCI_EXP_TYPE_ROOT_PORT)
+		return NULL;
+
+	return container_of(tsm, struct cca_host_rp_dsc, pci);
+}
+
 static inline struct cca_host_pdev_dsc *to_cca_pdev_dsc(struct pci_dev *pdev)
 {
 	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
+	struct cca_host_rp_dsc *rp_dsc;
 
 	pf0_ep_dsc = to_cca_pf0_ep_dsc(pdev);
 	if (pf0_ep_dsc)
 		return &pf0_ep_dsc->pdev;
+
+	rp_dsc = to_cca_rp_dsc(pdev);
+	if (rp_dsc)
+		return &rp_dsc->pdev;
 
 	return NULL;
 }
@@ -152,5 +204,10 @@ int cca_pdev_collect_identity(struct pci_dev *pdev);
 bool cca_pdev_needs_key(struct pci_dev *pdev);
 int cca_pdev_set_public_key(struct pci_dev *pdev);
 void cca_pdev_stop_and_destroy(struct pci_dev *pdev);
+int cca_pdev_stream_connect(struct pci_dev *pdev1, struct pci_dev *pdev2,
+		struct rmi_pdev_stream_params *stream_params,
+		unsigned long *stream_handle);
+int cca_pdev_disconnect_stream(struct pci_dev *pdev1,
+		struct pci_dev *pdev2, unsigned long stream_handle);
 
 #endif

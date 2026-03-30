@@ -62,6 +62,10 @@ static int init_pdev_params(struct pci_dev *pdev, struct rmi_pdev_params *params
 		category = RMI_PDEV_FLAGS_CATEGORY_OFF_CHIP_EP;
 		break;
 	}
+	case PCI_EXP_TYPE_ROOT_PORT: {
+		category = RMI_PDEV_FLAGS_CATEGORY_ROOT_PORT;
+		break;
+	}
 	default:
 		return -EINVAL;
 	}
@@ -762,7 +766,7 @@ redo_communicate:
 	mutex_unlock(&pdev_dsc->object_lock);
 }
 
-static int __maybe_unused submit_stream_work(struct pci_dev *pdev1, struct pci_dev *pdev2,
+static int submit_stream_work(struct pci_dev *pdev1, struct pci_dev *pdev2,
 		unsigned long stream_handle)
 {
 	phys_addr_t rmm_pdev1_phys, rmm_pdev2_phys = 0;
@@ -806,6 +810,40 @@ static int __maybe_unused submit_stream_work(struct pci_dev *pdev1, struct pci_d
 	rmm_pdev1_phys = virt_to_phys(pdev_dsc1->rmm_pdev);
 	if (pdev2)
 		rmm_pdev2_phys = virt_to_phys(pdev_dsc2->rmm_pdev);
+	/*
+	 * If we had device communication error, this will error out.
+	 */
+	if (rmi_pdev_stream_complete(rmm_pdev1_phys, rmm_pdev2_phys, stream_handle))
+		return -EIO;
 
 	return 0;
+}
+
+int cca_pdev_stream_connect(struct pci_dev *pdev1, struct pci_dev *pdev2,
+		struct rmi_pdev_stream_params *stream_params,
+		unsigned long *stream_handle)
+{
+	phys_addr_t stream_params_phys = virt_to_phys(stream_params);
+
+	if (rmi_pdev_stream_connect(stream_params_phys, stream_handle))
+		return -EIO;
+
+	return submit_stream_work(pdev1, pdev2, *stream_handle);
+}
+
+int cca_pdev_disconnect_stream(struct pci_dev *pdev1,
+		struct pci_dev *pdev2, unsigned long stream_handle)
+{
+
+	phys_addr_t rmm_pdev2_phys = 0;
+	struct cca_host_pdev_dsc *pdev_dsc1 = to_cca_pdev_dsc(pdev1);
+
+	if (pdev2)
+		rmm_pdev2_phys = virt_to_phys(to_cca_pdev_dsc(pdev2)->rmm_pdev);
+
+	if (rmi_pdev_stream_disconnect(virt_to_phys(pdev_dsc1->rmm_pdev),
+				       rmm_pdev2_phys, stream_handle))
+		return -EIO;
+
+	return submit_stream_work(pdev1, pdev2, stream_handle);
 }
