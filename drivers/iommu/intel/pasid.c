@@ -20,6 +20,7 @@
 
 #include "iommu.h"
 #include "pasid.h"
+#include "trace.h"
 #include "../iommu-pages.h"
 #include "../entry_sync.h"
 
@@ -68,8 +69,10 @@ static void intel_pasid_get_used(const u128 *entry, u128 *used)
 	ue->val[0] |= SM_PASID0_P;
 
 	/* Nothing more for non-present entries. */
-	if (!(pe->val[0] & SM_PASID0_P))
+	if (!(pe->val[0] & SM_PASID0_P)) {
+		trace_entry_get_used(entry, used);
 		return;
+	}
 
 	pgtt = pasid_pte_get_pgtt(pe);
 	switch (pgtt) {
@@ -97,6 +100,8 @@ static void intel_pasid_get_used(const u128 *entry, u128 *used)
 	default:
 		WARN_ON(true);
 	}
+
+	trace_entry_get_used(entry, used);
 }
 
 static void intel_pasid_sync(struct entry_sync_writer128 *writer)
@@ -121,6 +126,8 @@ static void intel_pasid_sync(struct entry_sync_writer128 *writer)
 
 	if (!ecap_coherent(iommu->ecap))
 		clflush_cache_range(pte, sizeof(*pte));
+
+	trace_entry_sync(dev, pasid, was_present, is_present);
 
 	/* Sync for "P=0" to "P=1": */
 	if (!was_present) {
@@ -185,7 +192,9 @@ static int __maybe_unused intel_pasid_write(struct intel_iommu *iommu,
 	 * 1. Checks if it can do a 1-quanta hitless flip.
 	 * 2. If not, it does a 3-step V=0 (disruptive) update.
 	 */
+	trace_entry_write_start(dev, pasid, target, (u128 *)pte);
 	entry_sync_write128(&p_writer.writer, (u128 *)pte, target, memory, sizeof(memory));
+	trace_entry_write_complete(dev, pasid, target, (u128 *)pte);
 
 	return 0;
 }
