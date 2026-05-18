@@ -18,6 +18,7 @@
 #include <asm/mem_encrypt.h>
 #include <asm/pgtable.h>
 
+static u64 rsi_feat_reg0;
 static struct realm_config config;
 static size_t ipa_state_change_alignment = PAGE_SIZE;
 
@@ -26,6 +27,12 @@ EXPORT_SYMBOL(prot_ns_shared);
 
 DEFINE_STATIC_KEY_FALSE_RO(rsi_present);
 EXPORT_SYMBOL(rsi_present);
+
+bool rsi_has_da_feature(void)
+{
+	return u64_get_bits(rsi_feat_reg0, RSI_FEATURE_REGISTER_0_DA);
+}
+EXPORT_SYMBOL_GPL(rsi_has_da_feature);
 
 static bool rsi_version_matches(void)
 {
@@ -229,6 +236,8 @@ void __init arm64_rsi_init(void)
 	if (!rsi_version_matches())
 		return;
 	if (WARN_ON(rsi_get_realm_config(lm_alias(&config))))
+		return;
+	if (WARN_ON(rsi_features(0, &rsi_feat_reg0)))
 		return;
 
 	ipa_state_change_alignment = get_ipa_state_change_alignment();
