@@ -295,7 +295,7 @@ static inline bool cca_pdev_need_sel_ide_streams(struct pci_dev *pdev)
 	return pci_pcie_type(pdev) == PCI_EXP_TYPE_ENDPOINT;
 }
 
-static int __maybe_unused cca_tsm_connect(struct pci_dev *pdev)
+static int cca_tsm_connect(struct pci_dev *pdev)
 {
 	struct pci_dev *rp = pcie_find_root_port(pdev);
 	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
@@ -385,7 +385,7 @@ err_stream_alloc:
 	return ret;
 }
 
-static void __maybe_unused cca_tsm_disconnect(struct pci_dev *pdev)
+static void cca_tsm_disconnect(struct pci_dev *pdev)
 {
 	struct pci_ide *ide;
 	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
@@ -414,6 +414,8 @@ static void __maybe_unused cca_tsm_disconnect(struct pci_dev *pdev)
 static struct pci_tsm_ops cca_link_pci_ops = {
 	.probe = cca_tsm_pci_probe,
 	.remove = cca_tsm_pci_remove,
+	.connect = cca_tsm_connect,
+	.disconnect = cca_tsm_disconnect,
 };
 
 static void cca_link_tsm_remove(void *tsm_dev)
