@@ -50,14 +50,14 @@ static int intel_nested_attach_dev(struct iommu_domain *domain,
 	if (ret)
 		goto detach_iommu;
 
-	ret = iopf_for_domain_set(domain, dev);
+	ret = iopf_for_domain_replace(domain, old, dev);
 	if (ret)
 		goto unassign_tag;
 
 	ret = intel_pasid_setup_nested(iommu, dev,
 				       IOMMU_NO_PASID, dmar_domain);
 	if (ret)
-		goto disable_iopf;
+		goto unwind_iopf;
 
 	info->domain = dmar_domain;
 	info->domain_attached = true;
@@ -66,8 +66,8 @@ static int intel_nested_attach_dev(struct iommu_domain *domain,
 	spin_unlock_irqrestore(&dmar_domain->lock, flags);
 
 	return 0;
-disable_iopf:
-	iopf_for_domain_remove(domain, dev);
+unwind_iopf:
+	iopf_for_domain_replace(old, domain, dev);
 unassign_tag:
 	cache_tag_unassign_domain(dmar_domain, dev, IOMMU_NO_PASID);
 detach_iommu:
