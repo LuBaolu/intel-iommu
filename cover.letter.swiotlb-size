@@ -1,0 +1,115 @@
+dma: swiotlb: Centralize default pool policy and sizing
+
+Hi,
+
+This series centralizes swiotlb default-pool selection and sizing, and
+simplifies the initialization flags used to describe pool placement.
+
+The first patch replaces the addressing-limit argument with initialization
+flags and introduces explicit policies for the different reasons a default
+pool may be needed. Architectures now report DMA addressing constraints with
+SWIOTLB_INIT_ADDRESSING_LIMIT, while the core selects the corresponding pool
+policy.
+
+The second patch moves the reduced sizing used when the pool is needed only
+for unaligned kmalloc bouncing from arm64 and RISC-V into the swiotlb core.
+
+The third patch centralizes swiotlb sizing for memory-encrypted systems. It
+moves the existing x86 guest-sizing policy into the core. Host memory
+encryption retains the normal pool size, and a shared default pool is not
+selected solely for guest memory encryption when a restricted DMA pool is
+present.
+
+The fourth patch removes SWIOTLB_ANY. Pool placement is derived directly from
+SWIOTLB_INIT_ADDRESSING_LIMIT: pools required for limited DMA addressing are
+allocated below the architecture's low address limit, while other pools may
+be allocated anywhere in directly mapped memory. Xen continues to request a
+pool explicitly with SWIOTLB_INIT_REMAP without imposing a low-address
+constraint.
+
+Changes from v5:
+https://lore.kernel.org/all/20260921063628.362078-1-aneesh.kumar@kernel.org
+* Collect Reviewed-by tags.
+* Drop the x86 crash changes
+* Add two new patches:
+  "dma: swiotlb: Consolidate slab rounding"
+  "dma: swiotlb: Rename swiotlb_size_or_default()"
+* Drop the swiotlb_default_size_changed() helper.
+* Simplify swiotlb_adjust_pool_size().
+
+Changes from v4:
+https://lore.kernel.org/all/20260914070135.313337-1-aneesh.kumar@kernel.org
+* Collect Reviewed-by tags.
+* Add a new patch, "dma: swiotlb: Track whether the pool size was explicitly set".
+* Retain SWIOTLB_ANY usage for RISC-V until patch 6.
+* Rename SWIOTLB_INIT_FORCE_DISABLE to SWIOTLB_INIT_DEFAULT_OFF.
+
+Changes from v3:
+https://lore.kernel.org/all/20260904101810.1193505-1-aneesh.kumar@kernel.org
+* Add a new patch, "dma: swiotlb: Add an overridable architecture pool opt-out".
+* Clarify the change in default behavior with the removal of SWIOTLB_ANY.
+
+Changes from v2:
+https://lore.kernel.org/all/20260813102521.1367737-1-aneesh.kumar@kernel.org
+* Rebase to latest tree.
+* Drop SWIOTLB_ANY and derive that based on SWIOTLB_INIT_ADDRESSING_LIMIT
+* Add SWIOTLB_INIT_REMAP.
+
+v1:
+https://lore.kernel.org/all/20260811134056.756015-1-aneesh.kumar@kernel.org
+
+Cc: Robin Murphy <robin.murphy@arm.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Marc Zyngier <maz@kernel.org>
+Cc: Steven Price <steven.price@arm.com>
+Cc: Suzuki K Poulose <Suzuki.Poulose@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Jiri Pirko <jiri@resnulli.us>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Mostafa Saleh <smostafa@google.com>
+Cc: Petr Tesarik <ptesarik@suse.com>
+Cc: Alexey Kardashevskiy <aik@amd.com>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: Xu Yilun <yilun.xu@linux.intel.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: "Christophe Leroy (CS GROUP)" <chleroy@kernel.org>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Stefano Stabellini <sstabellini@kernel.org>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
+Cc: Jiaxun Yang <jiaxun.yang@flygoat.com>
+Cc: Paul Walmsley <pjw@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: linux-arm-kernel@lists.infradead.org
+Cc: linux-kernel@vger.kernel.org
+Cc: loongarch@lists.linux.dev
+Cc: linux-mips@vger.kernel.org
+Cc: linuxppc-dev@lists.ozlabs.org
+Cc: linux-riscv@lists.infradead.org
+Cc: linux-s390@vger.kernel.org
+Cc: x86@kernel.org
