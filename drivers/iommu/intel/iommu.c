@@ -1591,7 +1591,7 @@ static int copy_translation_tables(struct intel_iommu *iommu)
 		if (ret) {
 			pr_err("%s: Failed to copy context table for bus %d\n",
 				iommu->name, bus);
-			continue;
+			goto err_free_ctxt_tbls;
 		}
 	}
 
@@ -1623,6 +1623,14 @@ static int copy_translation_tables(struct intel_iommu *iommu)
 	memunmap(old_rt);
 	return 0;
 
+err_free_ctxt_tbls:
+	/*
+	 * None of these tables have been linked into iommu->root_entry yet,
+	 * so they are unreachable and must be freed here.
+	 */
+	for (bus = 0; bus < ctxt_table_entries; bus++)
+		iommu_free_pages(ctxt_tbls[bus]);
+	kfree(ctxt_tbls);
 out_unmap:
 	memunmap(old_rt);
 err_free_bitmap:
