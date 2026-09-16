@@ -707,6 +707,17 @@ static inline unsigned long rmi_vdev_start(unsigned long rd,
 	return res.a0;
 }
 
+static inline unsigned long rmi_vdev_get_interface_report(unsigned long rd,
+		unsigned long pdev_phys, unsigned long vdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_GET_INTERFACE_REPORT,
+			     rd, pdev_phys, vdev_phys, &res);
+
+	return res.a0;
+}
+
 static inline unsigned long rmi_pdev_stop(unsigned long pdev_phys)
 {
 	struct arm_smccc_res res;
