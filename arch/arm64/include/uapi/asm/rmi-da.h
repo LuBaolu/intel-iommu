@@ -25,4 +25,11 @@ struct arm64_vdev_object_read_guest_req {
 	__aligned_u64 offset;
 };
 
+struct arm64_vdev_object_regen_guest_req {
+	__u32 object_type;
+	__u32 reserved;
+	__aligned_u64 flags;
+	__aligned_u64 nonce;
+};
+
 #endif

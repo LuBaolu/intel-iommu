@@ -247,7 +247,8 @@ static int cca_vdevice_init(struct iommufd_vdevice *vdev)
 	vdev->tsm_req_op_mask = BIT_ULL(TSM_REQ_VALIDATE_MMIO) |
 				BIT_ULL(TSM_REQ_SET_TDI_STATE) |
 				BIT_ULL(TSM_REQ_OBJECT_INFO) |
-				BIT_ULL(TSM_REQ_READ_OBJECT);
+				BIT_ULL(TSM_REQ_READ_OBJECT) |
+				BIT_ULL(TSM_REQ_REGEN_OBJECT);
 	vdev->destroy = cca_vdevice_destroy;
 	return 0;
 
@@ -346,6 +347,17 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 		if (len <= 0)
 			return len;
 		return info->resp_len - len;
+	}
+	case TSM_REQ_REGEN_OBJECT: {
+		struct arm64_vdev_object_regen_guest_req req;
+
+		if (info->req_len != sizeof(req))
+			return -EINVAL;
+		if (copy_from_user(&req, info->req, sizeof(req)))
+			return -EFAULT;
+		if (req.object_type == RHI_DA_OBJECT_INTERFACE_REPORT)
+			return cca_vdev_update_interface_report(host_tdi, pdev);
+		return -EINVAL;
 	}
 	default:
 		return -EINVAL;
