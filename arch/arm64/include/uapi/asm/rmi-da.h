@@ -15,4 +15,14 @@ struct arm64_vdev_set_tdi_state_guest_req {
 	__u32 tdi_state;
 };
 
+struct arm64_vdev_object_size_guest_req {
+	__u32 object_type;
+};
+
+struct arm64_vdev_object_read_guest_req {
+	__u32 object_type;
+	__u32 reserved;
+	__aligned_u64 offset;
+};
+
 #endif
