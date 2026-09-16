@@ -245,5 +245,11 @@ int cca_vdev_device_map(struct cca_host_tdi *host_tdi, struct pci_dev *pdev,
 int cca_vdev_device_start(struct cca_host_tdi *host_tdi, struct pci_dev *pdev);
 int cca_vdev_device_lock(struct cca_host_tdi *host_tdi, struct pci_dev *pdev);
 int cca_vdev_device_unlock(struct cca_host_tdi *host_tdi, struct pci_dev *pdev);
+int cca_vdev_get_object_size(struct cca_host_tdi *host_tdi,
+			     struct pci_dev *pdev, int type);
+int cca_vdev_read_cached_object(struct cca_host_tdi *host_tdi,
+				struct pci_dev *pdev, int type,
+				unsigned long offset, unsigned long max_len,
+				void __user *user_buf);
 
 #endif
