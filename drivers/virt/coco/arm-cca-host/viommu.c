@@ -357,6 +357,10 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 			return -EFAULT;
 		if (req.object_type == RHI_DA_OBJECT_INTERFACE_REPORT)
 			return cca_vdev_update_interface_report(host_tdi, pdev);
+		if (req.object_type == RHI_DA_OBJECT_MEASUREMENT)
+			return cca_vdev_update_device_measurements(host_tdi, pdev,
+							   req.flags,
+							   (u8 *)req.nonce);
 		return -EINVAL;
 	}
 	default:
