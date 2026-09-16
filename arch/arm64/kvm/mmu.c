@@ -1721,6 +1721,8 @@ struct kvm_s2_fault_desc {
 	unsigned long		hva;
 };
 
+static bool private_ipa_fault(struct kvm *kvm, phys_addr_t fault_ipa);
+
 static int gmem_abort(const struct kvm_s2_fault_desc *s2fd)
 {
 	bool write_fault, exec_fault;
@@ -2039,12 +2041,6 @@ static gfn_t get_canonical_gfn(const struct kvm_s2_fault_desc *s2fd,
 static int kvm_s2_fault_pin_pfn(const struct kvm_s2_fault_desc *s2fd,
 				struct kvm_s2_fault_vma_info *s2vi)
 {
-	int ret;
-
-	ret = kvm_s2_fault_get_vma_info(s2fd, s2vi);
-	if (ret)
-		return ret;
-
 	s2vi->pfn = __kvm_faultin_pfn(s2fd->memslot, get_canonical_gfn(s2fd, s2vi),
 				      kvm_is_write_fault(s2fd->vcpu) ? FOLL_WRITE : 0,
 				      &s2vi->map_writable, &s2vi->page);
@@ -2244,6 +2240,7 @@ static int user_mem_abort(const struct kvm_s2_fault_desc *s2fd)
 {
 	bool perm_fault = kvm_vcpu_trap_is_permission_fault(s2fd->vcpu);
 	struct kvm_s2_fault_vma_info s2vi = {};
+	struct kvm *kvm = s2fd->vcpu->kvm;
 	enum kvm_pgtable_prot prot;
 	void *memcache;
 	int ret;
@@ -2265,6 +2262,31 @@ static int user_mem_abort(const struct kvm_s2_fault_desc *s2fd)
 			return ret;
 	}
 
+	ret = kvm_s2_fault_get_vma_info(s2fd, &s2vi);
+	if (ret)
+		return ret;
+
+	/*
+	 * The private/shared attribute selects whether a Realm fault may consume
+	 * userspace memory here or guest_memfd memory in gmem_abort().  Read it
+	 * after capturing mmu_seq, and use that same sequence when installing the
+	 * mapping, so an attribute conversion cannot complete between the check
+	 * and the map without forcing a retry.
+	 */
+	if (kvm_vm_is_realm(kvm)) {
+		gfn_t gfn = kvm_gpa_from_fault(kvm, s2fd->fault_ipa) >> PAGE_SHIFT;
+		bool is_private = private_ipa_fault(kvm, s2fd->fault_ipa);
+
+		if (is_private != kvm_gmem_is_private_gfn(kvm, gfn)) {
+			kvm_prepare_memory_fault_exit(s2fd->vcpu, gfn_to_gpa(gfn),
+						      PAGE_SIZE,
+						      kvm_is_write_fault(s2fd->vcpu),
+						      kvm_vcpu_trap_is_exec_fault(s2fd->vcpu),
+						      is_private);
+			return -EFAULT;
+		}
+	}
+
 	/*
 	 * Let's check if we will get back a huge page backed by hugetlbfs, or
 	 * get block mapping for device MMIO region.
@@ -2281,8 +2303,6 @@ static int user_mem_abort(const struct kvm_s2_fault_desc *s2fd)
 
 	return kvm_s2_fault_map(s2fd, &s2vi, prot, memcache);
 }
-
-static bool private_ipa_fault(struct kvm *kvm, phys_addr_t fault_ipa);
 
 /* Decide if an abort should be handled by the gmem */
 static bool kvm_fault_is_gmem_abort(struct kvm *kvm,
