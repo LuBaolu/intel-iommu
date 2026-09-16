@@ -4671,6 +4671,9 @@ static void arm_smmu_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
 	if (smmu->features & ARM_SMMU_FEAT_PRI)
 		max_config_index = PRIQ_MSI_INDEX;
 
+	/* save the programmed msi message details */
+	desc->msg = *msg;
+
 	/* Don't try to config for Realm interrupts. */
 	if (desc->msi_index > max_config_index)
 		return;
