@@ -1335,6 +1335,24 @@ static void noinstr kvm_rec_complete_sysreg_access(struct kvm_vcpu *vcpu)
 		rec->run->enter.gprs[rt] = vcpu_get_reg(vcpu, rt);
 }
 
+static int rmi_rtt_dev_map(unsigned long rd_phys, unsigned long vdev_phys,
+		unsigned long base, unsigned long top, unsigned long flags,
+		unsigned long range_desc, unsigned long *out_top, unsigned long *rmi_ret)
+{
+	struct rmi_sro_state *sro __free(kfree) = kmalloc_obj(*sro);
+	if (!sro)
+		return -ENOMEM;
+
+	*rmi_ret = rmi_sro_memxfer_cmd(sro, GFP_KERNEL, SMC_RMI_RTT_DEV_MAP,
+				       rd_phys, vdev_phys, base, top, flags, range_desc);
+	if (*rmi_ret)
+		return 0;
+
+	*out_top = sro->regs.a1;
+
+	return 0;
+}
+
 static int rmi_rtt_dev_unmap(unsigned long rd_phys,
 		unsigned long base, unsigned long top,
 		unsigned long *out_ipa, unsigned long *out_desc,
@@ -1355,6 +1373,19 @@ static int rmi_rtt_dev_unmap(unsigned long rd_phys,
 	*out_desc = sro->regs.a2;
 
 	return 0;
+}
+
+static bool realm_dev_mapping_overlaps(struct realm *realm,
+				       unsigned long start,
+				       unsigned long end)
+{
+	struct realm_dev_mapping *mapping;
+
+	list_for_each_entry(mapping, &realm->dev_mappings, node)
+		if (mapping->start < end && start < mapping->end)
+			return true;
+
+	return false;
 }
 
 static void realm_dev_mappings_free(struct realm *realm)
@@ -1444,7 +1475,7 @@ retry:
 		if (ret)
 			goto out_free_split;
 
-		if (RMI_RETURN_STATUS(rmi_ret) == RMI_ERROR_RTT) {
+		if (RMI_RESULT_STATUS(rmi_ret) == RMI_ERROR_RTT) {
 			phys_addr_t rtt;
 
 			if (next_ipa > ipa) {
@@ -1461,7 +1492,7 @@ retry:
 				goto out_free_split;
 			}
 			ret = realm_rtt_create(realm, ipa,
-					       RMI_RETURN_INDEX(rmi_ret) + 1, rtt);
+					       RMI_RESULT_DATA_LEVEL(rmi_ret) + 1, rtt);
 			if (ret) {
 				free_rtt(rtt);
 				goto out_free_split;
@@ -1500,6 +1531,173 @@ out_free_split:
 	return ret;
 }
 
+static int rmi_rtt_dev_validate(unsigned long rd_phys, unsigned long rec_phys,
+		unsigned long base, unsigned long top, unsigned long *out_top,
+		unsigned long *rmi_ret)
+{
+	struct rmi_sro_state *sro __free(kfree) = kmalloc_obj(*sro);
+	if (!sro)
+		return -ENOMEM;
+
+	*rmi_ret = rmi_sro_memxfer_cmd(sro, GFP_KERNEL, SMC_RMI_RTT_DEV_VALIDATE,
+				       rd_phys, rec_phys, base, top);
+	if (*rmi_ret)
+		return 0;
+
+	*out_top = sro->regs.a1;
+
+	return 0;
+}
+
+/*
+ * Even though we can map larger block, since we need to delegate each granule.
+ * We map granule size and fold
+ */
+static int __realm_dev_mem_map(struct kvm *kvm, struct kvm_mmu_memory_cache *cache,
+		unsigned long pdev_phys, unsigned long vdev_phys,
+		unsigned long start_ipa, unsigned long end_ipa,
+		phys_addr_t phys, unsigned long *top_ipa)
+{
+	int ret = 0;
+	unsigned long rmi_ret;
+	unsigned long ipa = start_ipa, next_ipa;
+	struct realm *realm = &kvm->arch.realm;
+	phys_addr_t rd_phys = virt_to_phys(realm->rd);
+
+	*top_ipa = start_ipa;
+	if (rmi_delegate_range(phys, end_ipa - start_ipa, NULL))
+		return -EINVAL;
+
+	while (ipa < end_ipa) {
+		unsigned long flags = RMI_ADDR_TYPE_SINGLE;
+		unsigned long range_desc = addr_range_desc(phys, end_ipa - ipa,
+							   RMI_OP_MEM_DELEGATED);
+
+		ret = rmi_rtt_dev_map(rd_phys, vdev_phys, ipa, end_ipa, flags,
+				      range_desc, &next_ipa, &rmi_ret);
+		if (ret)
+			goto err_undelegate_tail;
+
+		if (RMI_RESULT_STATUS(rmi_ret) == RMI_ERROR_RTT) {
+			/* Create missing RTTs and retry */
+			int level = RMI_RESULT_DATA_LEVEL(rmi_ret);
+
+			WARN_ON(level == KVM_PGTABLE_LAST_LEVEL);
+
+			if (kvm_mmu_memory_cache_nr_free_objects(cache) <
+			    (KVM_PGTABLE_LAST_LEVEL - level)) {
+				ret = -ENOMEM;
+				goto err_undelegate_tail;
+			}
+
+			ret = realm_create_rtt_levels(realm, ipa, level,
+						      KVM_PGTABLE_LAST_LEVEL,
+						      cache);
+			if (ret)
+				goto err_undelegate_tail;
+
+			ret = rmi_rtt_dev_map(rd_phys, vdev_phys, ipa, end_ipa, flags,
+					      range_desc, &next_ipa, &rmi_ret);
+			if (ret)
+				goto err_undelegate_tail;
+		}
+
+		if (WARN_ON(rmi_ret != RMI_SUCCESS)) {
+			ret = -EIO;
+			goto err_undelegate_tail;
+		}
+
+		phys += next_ipa - ipa;
+		ipa = next_ipa;
+	}
+	/*
+	 * successfully mapped the provided range, return the top_ipa
+	 */
+	*top_ipa = end_ipa;
+	return 0;
+
+err_undelegate_tail:
+	*top_ipa = ipa;
+	/*
+	 * undelegate the tail range. Rest will be done by the caller.
+	 */
+	if (end_ipa > ipa)
+		WARN_ON(rmi_undelegate_range(phys, end_ipa - ipa));
+
+	return ret;
+}
+
+int realm_dev_mem_map(struct kvm *kvm, unsigned long pdev_phys,
+		unsigned long vdev_phys, unsigned long start_ipa,
+		unsigned long end_ipa, unsigned long start_pa)
+{
+	struct realm_dev_mapping *mapping;
+	bool mapping_added;
+	int ret = 0;
+	unsigned long top_ipa;
+	unsigned long base_ipa = start_ipa;
+	struct realm *realm = &kvm->arch.realm;
+	struct kvm_s2_mmu *mmu = &kvm->arch.mmu;
+	struct kvm_mmu_memory_cache cache = { .gfp_zero = __GFP_ZERO };
+
+	do {
+		mapping = kmalloc_obj(*mapping);
+		if (!mapping) {
+			ret = -ENOMEM;
+			break;
+		}
+		mapping_added = false;
+
+		ret = kvm_mmu_topup_memory_cache(&cache,
+						 kvm_mmu_cache_min_pages(mmu));
+		if (ret) {
+			kfree(mapping);
+			break;
+		}
+
+		write_lock(&kvm->mmu_lock);
+		if (realm_dev_mapping_overlaps(realm, start_ipa, end_ipa)) {
+			ret = -EEXIST;
+			top_ipa = start_ipa;
+		} else {
+			ret = __realm_dev_mem_map(kvm, &cache, pdev_phys,
+						  vdev_phys, start_ipa, end_ipa,
+						  start_pa, &top_ipa);
+			if (top_ipa > start_ipa) {
+				mapping->vdev_phys = vdev_phys;
+				mapping->start = start_ipa;
+				mapping->end = top_ipa;
+				list_add_tail(&mapping->node,
+					      &realm->dev_mappings);
+				mapping_added = true;
+			}
+		}
+		write_unlock(&kvm->mmu_lock);
+		if (!mapping_added)
+			kfree(mapping);
+
+		/* update base before we break out of loop*/
+		start_pa += top_ipa - start_ipa;
+		start_ipa = top_ipa;
+		if (ret && ret != -ENOMEM)
+			break;
+	} while (start_ipa < end_ipa);
+
+	kvm_mmu_free_memory_cache(&cache);
+
+	if (ret && start_ipa > base_ipa) {
+		int unmap_ret;
+
+		write_lock(&kvm->mmu_lock);
+		unmap_ret = __realm_dev_mem_unmap(kvm, base_ipa, start_ipa, false);
+		write_unlock(&kvm->mmu_lock);
+		WARN_ON(unmap_ret);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(realm_dev_mem_map);
+
 int realm_dev_mem_unmap(struct kvm *kvm, unsigned long vdev_phys)
 {
 	struct realm *realm = &kvm->arch.realm;
@@ -1529,9 +1727,44 @@ int realm_dev_mem_unmap(struct kvm *kvm, unsigned long vdev_phys)
 }
 EXPORT_SYMBOL_GPL(realm_dev_mem_unmap);
 
+static void kvm_complete_vdev_map_validate(struct kvm_vcpu *vcpu)
+{
+	struct kvm *kvm = vcpu->kvm;
+	struct realm_rec *rec = &vcpu->arch.rec;
+	struct kvm_run *run = vcpu->run;
+	struct realm *realm = &kvm->arch.realm;
+	phys_addr_t rd_phys = virt_to_phys(realm->rd);
+	phys_addr_t rec_phys = virt_to_phys(rec->rec_page);
+
+	/* reject the vdev_map validate request  */
+	if (run->cca_exit.response) {
+		rec->run->enter.flags = REC_ENTER_FLAG_DEV_MEM_RESPONSE;
+	} else {
+		unsigned long next_ipa;
+		unsigned long start_ipa = run->cca_exit.gpa_base;
+
+		while (start_ipa < run->cca_exit.gpa_top) {
+			int ret;
+			unsigned long rmi_ret;
+
+			ret = rmi_rtt_dev_validate(rd_phys, rec_phys, start_ipa,
+					   run->cca_exit.gpa_top, &next_ipa,
+					   &rmi_ret);
+			if (ret || rmi_ret) {
+				rec->run->enter.flags = REC_ENTER_FLAG_DEV_MEM_RESPONSE;
+				break;
+			}
+			start_ipa = next_ipa;
+		}
+	}
+}
+
 int kvm_rec_handle_request(struct kvm_vcpu *vcpu)
 {
 	struct realm_rec *rec = &vcpu->arch.rec;
+
+	if (kvm_realm_state(vcpu->kvm) != REALM_STATE_ACTIVE)
+		return -EINVAL;
 
 	switch (rec->run->exit.exit_reason) {
 	case RMI_EXIT_SYNC:
@@ -1544,6 +1777,9 @@ int kvm_rec_handle_request(struct kvm_vcpu *vcpu)
 	case RMI_EXIT_HOST_CALL:
 		for (int i = 0; i < REC_RUN_GPRS; i++)
 			rec->run->enter.gprs[i] = vcpu_get_reg(vcpu, i);
+		break;
+	case RMI_EXIT_VDEV_VALIDATE_MAPPING:
+		kvm_complete_vdev_map_validate(vcpu);
 		break;
 	default:
 		KVM_BUG(1, vcpu->kvm, "Unhandled realm exit_reason");
