@@ -44,7 +44,6 @@ module_param(disable_msipolling, bool, 0444);
 MODULE_PARM_DESC(disable_msipolling,
 	"Disable MSI-based polling for CMD_SYNC completion.");
 
-static const struct iommu_ops arm_smmu_ops;
 static struct iommu_dirty_ops arm_smmu_dirty_ops;
 
 /*
@@ -4378,7 +4377,7 @@ static int arm_smmu_def_domain_type(struct device *dev)
 	return 0;
 }
 
-static const struct iommu_ops arm_smmu_ops = {
+const struct iommu_ops arm_smmu_ops = {
 	.identity_domain	= &arm_smmu_identity_domain,
 	.blocked_domain		= &arm_smmu_blocked_domain,
 	.release_domain		= &arm_smmu_blocked_domain,
