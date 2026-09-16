@@ -663,4 +663,14 @@ struct rmi_pdev_stream_params {
 	};
 };
 
+enum rmi_vdev_state {
+	RMI_VDEV_NEW,
+	RMI_VDEV_UNLOCKED,
+	RMI_VDEV_LOCKED,
+	RMI_VDEV_STARTED,
+	RMI_VDEV_ERROR,
+	RMI_VDEV_KEY_REFRESH,
+	RMI_VDEV_KEY_PURGE,
+};
+
 #endif /* __LINUX_ARM_SMCCC_RMI_H_ */
