@@ -18,6 +18,7 @@
 #include <linux/interrupt.h>
 #include <linux/io-pgtable.h>
 #include <linux/iopoll.h>
+#include <linux/irqdomain.h>
 #include <linux/jump_label.h>
 #include <linux/module.h>
 #include <linux/msi.h>
@@ -5302,8 +5303,6 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 	if (arm_smmu_sva_supported(smmu))
 		smmu->features |= ARM_SMMU_FEAT_SVA;
 
-	dev_info(smmu->dev, "oas %lu-bit (features 0x%08x)\n",
-		 smmu->oas, smmu->features);
 	return 0;
 }
 
@@ -5548,6 +5547,159 @@ err_remove:
 	return ERR_PTR(ret);
 }
 
+static void __arm_smmu_release_realm_irq_mapping(void *data)
+{
+	irq_dispose_mapping((unsigned long)data);
+}
+
+static struct irq_domain *arm_smmu_get_wired_irq_domain(struct arm_smmu_device *smmu)
+{
+	int irqs[] = {
+		smmu->combined_irq,
+		smmu->evtq.q.irq,
+		smmu->gerr_irq,
+		smmu->priq.q.irq,
+	};
+	struct irq_domain *domain = NULL;
+	struct irq_data *irq_data;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(irqs); i++) {
+		if (irqs[i] <= 0)
+			continue;
+
+		irq_data = irq_get_irq_data(irqs[i]);
+		if (!irq_data || !irq_data->domain)
+			return ERR_PTR(-EINVAL);
+
+		if (domain && domain != irq_data->domain)
+			return ERR_PTR(-EINVAL);
+
+		domain = irq_data->domain;
+	}
+
+	return domain ?: ERR_PTR(-ENXIO);
+}
+
+static int arm_smmu_map_realm_irq(struct arm_smmu_device *smmu,
+				  struct irq_domain *domain,
+				  irq_hw_number_t hwirq, int *irq,
+				  bool *mapping_created)
+{
+	unsigned int virq;
+	bool existing;
+	int ret;
+
+	existing = irq_find_mapping(domain, hwirq);
+	virq = irq_create_mapping(domain, hwirq);
+	if (!virq)
+		return -EINVAL;
+
+	if (!existing) {
+		ret = devm_add_action_or_reset(smmu->dev,
+					       __arm_smmu_release_realm_irq_mapping,
+					       (void *)(unsigned long)virq);
+		if (ret)
+			return ret;
+		if (mapping_created)
+			*mapping_created = true;
+	}
+
+	*irq = virq;
+	return 0;
+}
+
+static void arm_smmu_release_realm_irq_mapping(struct arm_smmu_device *smmu,
+					       int *irq, bool mapping_created)
+{
+	void *data = (void *)(unsigned long)*irq;
+
+	if (mapping_created)
+		devm_release_action(smmu->dev,
+				    __arm_smmu_release_realm_irq_mapping, data);
+
+	*irq = 0;
+}
+
+static int arm_smmu_rmm_device_probe(struct arm_smmu_device *smmu)
+{
+	struct irq_domain *domain;
+	unsigned long flags, irq_cfg;
+	bool gerr_mapping_created = false;
+	bool evtq_mapping_created = false;
+	int ret;
+
+	struct rmi_psmmu_info *psmmu_info __free(free_page) =
+		(struct rmi_psmmu_info *)get_zeroed_page(GFP_KERNEL);
+	if (!psmmu_info)
+		return -ENOMEM;
+
+	if (!rmm_is_active())
+		return -ENODEV;
+
+	if (rmi_psmmu_info(smmu->base_phys, virt_to_phys(psmmu_info)))
+		return -ENODEV;
+
+	flags = psmmu_info->flags;
+	irq_cfg = flags & RMI_PSMMU_IRQCFG_MASK;
+
+	/* Disable RME FEAT because RMM need cmdq sync interrupt*/
+	if (flags & RMI_PSMMU_CMDQSYNC_IRQ_WIRED)
+		return -EINVAL;
+
+	switch (irq_cfg) {
+	case RMI_PSMMU_IRQCFG_IRQ_WIRED:
+		domain = arm_smmu_get_wired_irq_domain(smmu);
+		if (IS_ERR(domain))
+			return dev_err_probe(smmu->dev, PTR_ERR(domain),
+					     "failed to find wired IRQ domain\n");
+
+		ret = arm_smmu_map_realm_irq(smmu, domain,
+					     psmmu_info->gerror_intr_num,
+					     &smmu->realm.gerr_irq,
+					     &gerr_mapping_created);
+		if (ret)
+			goto err_mapping;
+
+		ret = arm_smmu_map_realm_irq(smmu, domain,
+					     psmmu_info->eventq_intr_num,
+					     &smmu->realm.evtq_irq,
+					     &evtq_mapping_created);
+		if (ret)
+			goto err_release_gerr_mapping;
+
+		if ((flags & RMI_PSMMU_PRI) &&
+		    (smmu->features & ARM_SMMU_FEAT_PRI)) {
+			ret = arm_smmu_map_realm_irq(smmu, domain,
+						     psmmu_info->priq_intr_num,
+						     &smmu->realm.pri_irq,
+						     NULL);
+			if (ret)
+				goto err_release_evtq_mapping;
+		}
+		break;
+	case RMI_PSMMU_IRQCFG_IRQ_MSI:
+		smmu->features |= ARM_SMMU_FEAT_RME_MSI;
+		break;
+	case RMI_PSMMU_IRQCFG_IRQ_DISABLED:
+	default:
+		return -ENODEV;
+	}
+
+	smmu->features |= ARM_SMMU_FEAT_RME_IRQ;
+	return 0;
+
+err_release_evtq_mapping:
+	arm_smmu_release_realm_irq_mapping(smmu, &smmu->realm.evtq_irq,
+					   evtq_mapping_created);
+err_release_gerr_mapping:
+	arm_smmu_release_realm_irq_mapping(smmu, &smmu->realm.gerr_irq,
+					   gerr_mapping_created);
+err_mapping:
+	return dev_err_probe(smmu->dev, ret,
+			     "failed to map Realm IRQ\n");
+}
+
 static int arm_smmu_device_probe(struct platform_device *pdev)
 {
 	int irq, ret;
@@ -5624,10 +5776,15 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	if (arm_smmu_rmm_device_probe(smmu))
+		smmu->features &= ~ARM_SMMU_FEAT_RME;
 #if 0
 		smmu->features |= ARM_SMMU_FEAT_RME_IRQ;
 		smmu->features |= ARM_SMMU_FEAT_RME_MSI;
 #endif
+	dev_info(smmu->dev, "oas %lu-bit (features 0x%08x)\n",
+		 smmu->oas, smmu->features);
+
 	/* Initialise in-memory data structures */
 	ret = arm_smmu_init_structures(smmu);
 	if (ret)
