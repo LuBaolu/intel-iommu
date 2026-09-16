@@ -7,12 +7,12 @@
 #define __LINUX_ARM_RMI_CMDS_H_
 
 #include <linux/arm-smccc-rmi.h>
+#include <linux/bitfield.h>
 #include <linux/bug.h>
 #include <linux/gfp.h>
 #include <linux/processor.h>
 #include <linux/string.h>
 #include <linux/types.h>
-
 #define RMI_MAX_ADDR_LIST	256
 
 struct rtt_entry {
@@ -82,6 +82,11 @@ static inline bool rmm_is_active(void)
 {
 	/* If RMM is active we should atlest find non zero S2SZ field */
 	return rmi_feat_reg(0) != 0;
+}
+
+static inline bool rmm_has_reg2_feature(unsigned long feature)
+{
+	return !!u64_get_bits(rmi_feat_reg(2), feature);
 }
 
 long rmi_sro_memxfer_execute(struct rmi_sro_state *sro, gfp_t gfp);
