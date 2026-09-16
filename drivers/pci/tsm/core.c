@@ -664,7 +664,7 @@ struct pci_tsm_mmio *pci_tsm_mmio_alloc(struct pci_dev *pdev)
 	struct pci_tsm_evidence *evidence = &tsm->evidence;
 	struct pci_tsm_evidence_object *report_obj = &evidence->obj[PCI_TSM_EVIDENCE_TYPE_REPORT];
 	struct tsm_dev *tsm_dev = tsm->tsm_dev;
-	u64 reporting_bar_base, last_reporting_end;
+	u64 last_reporting_end;
 	const struct pci_tsm_devif_report *report;
 	u32 mmio_range_count;
 	int last_bar = -1;
@@ -704,9 +704,6 @@ struct pci_tsm_mmio *pci_tsm_mmio_alloc(struct pci_dev *pdev)
 		int bar = FIELD_GET(PCI_TSM_DEVIF_REPORT_MMIO_ATTR_RANGE_ID,
 				    attr);
 
-		tsm_offset *= SZ_4K;
-		size *= SZ_4K;
-
 		if (bar >= PCI_STD_NUM_BARS ||
 		    !(pci_resource_flags(pdev, bar) & IORESOURCE_MEM)) {
 			pci_dbg(pdev, "Invalid reporting bar ID %d\n", bar);
@@ -721,11 +718,6 @@ struct pci_tsm_mmio *pci_tsm_mmio_alloc(struct pci_dev *pdev)
 		if (last_bar < bar) {
 			/* transition to a new bar */
 			last_bar = bar;
-			/*
-			 * The tsm_offset for the first range of the BAR
-			 * corresponds to the BAR base.
-			 */
-			reporting_bar_base = tsm_offset;
 		} else if (tsm_offset < last_reporting_end) {
 			pci_dbg(pdev, "Reporting ranges within BAR not in ascending order\n");
 			return NULL;
@@ -737,7 +729,8 @@ struct pci_tsm_mmio *pci_tsm_mmio_alloc(struct pci_dev *pdev)
 			return NULL;
 		}
 
-		range_off = tsm_offset - reporting_bar_base;
+		range_off = tsm_offset & (pci_resource_len(pdev, bar) - 1);
+
 		if (pci_resource_len(pdev, bar) < range_off + size) {
 			pci_dbg(pdev, "Reporting range larger than BAR size\n");
 			return NULL;
