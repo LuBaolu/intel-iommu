@@ -30,6 +30,8 @@ struct gmem_file {
 	struct list_head entry;
 };
 
+static inline struct file *kvm_gmem_get_file(struct kvm_memory_slot *slot);
+
 struct gmem_inode {
 	struct shared_policy policy;
 	struct inode vfs_inode;
@@ -99,9 +101,9 @@ static bool kvm_gmem_is_shared_mem(struct inode *inode, pgoff_t index)
 	return !kvm_gmem_is_private_mem(inode, index);
 }
 
-static bool kvm_gmem_range_has_attributes(struct inode *inode,
-					  pgoff_t index, size_t nr_pages,
-					  u64 attributes)
+static bool __kvm_gmem_range_has_attributes(struct inode *inode,
+					    pgoff_t index, size_t nr_pages,
+					    u64 attributes)
 {
 	struct maple_tree *mt = &GMEM_I(inode)->attributes;
 	pgoff_t end = index + nr_pages - 1;
@@ -116,6 +118,33 @@ static bool kvm_gmem_range_has_attributes(struct inode *inode,
 
 	return true;
 }
+
+bool kvm_gmem_range_has_attributes(struct kvm_memory_slot *slot, gfn_t start,
+				   gfn_t end, u64 attributes)
+{
+	pgoff_t index = kvm_gmem_get_index(slot, start);
+	struct file *file;
+	struct inode *inode;
+	bool ret;
+
+	if (WARN_ON_ONCE(start >= end || start < slot->base_gfn ||
+			 end > slot->base_gfn + slot->npages))
+		return false;
+
+	file = kvm_gmem_get_file(slot);
+	if (!file)
+		return false;
+
+	inode = file_inode(file);
+	filemap_invalidate_lock_shared(inode->i_mapping);
+	ret = __kvm_gmem_range_has_attributes(inode, index, end - start,
+					       attributes);
+	filemap_invalidate_unlock_shared(inode->i_mapping);
+	fput(file);
+
+	return ret;
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_gmem_range_has_attributes);
 
 /*
  * Returns a locked folio on success.  The caller is responsible for
@@ -660,7 +689,7 @@ static int __kvm_gmem_set_attributes(struct inode *inode, pgoff_t start,
 
 	filemap_invalidate_lock(mapping);
 
-	if (kvm_gmem_range_has_attributes(inode, start, nr_pages, attrs))
+	if (__kvm_gmem_range_has_attributes(inode, start, nr_pages, attrs))
 		goto out;
 
 	mas_init(&mas, mt, start);
@@ -1152,7 +1181,6 @@ out:
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_gmem_get_pfn);
 
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_POPULATE
-
 static long __kvm_gmem_populate(struct kvm *kvm, struct kvm_memory_slot *slot,
 				struct file *file, gfn_t gfn, struct page *src_page,
 				kvm_gmem_populate_cb post_populate, void *opaque)
