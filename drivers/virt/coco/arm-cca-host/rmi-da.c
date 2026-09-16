@@ -11,6 +11,9 @@
 #include <crypto/internal/rsa.h>
 #include <keys/asymmetric-type.h>
 #include <keys/x509-parser.h>
+#include <linux/kvm_types.h>
+#include <linux/kvm_host.h>
+#include <asm/kvm_rmi.h>
 
 #include "rmi-da.h"
 
@@ -206,7 +209,9 @@ static inline gfp_t cache_obj_id_to_gfp_flags(u8 cache_obj_id)
 	return GFP_KERNEL_ACCOUNT;
 }
 
-static int _do_dev_communicate(enum dev_comm_type type, struct pci_tsm *tsm, int *stream_wait)
+static int _do_dev_communicate(enum dev_comm_type type, struct pci_tsm *tsm,
+			       struct cca_host_tdi *host_tdi,
+			       int *stream_wait)
 {
 	unsigned long rmi_ret;
 	gfp_t cache_alloc_flags;
@@ -223,7 +228,10 @@ redo_communicate:
 		rmi_ret = rmi_pdev_communicate(virt_to_phys(pdev_dsc->rmm_pdev),
 					       virt_to_phys(comm_data->io_params));
 	else
-		rmi_ret = RMI_ERROR_INPUT;
+		rmi_ret = rmi_vdev_communicate(virt_to_phys(host_tdi->realm->rd),
+					       virt_to_phys(pdev_dsc->rmm_pdev),
+					       virt_to_phys(host_tdi->rmm_vdev),
+					       virt_to_phys(comm_data->io_params));
 	if (rmi_ret != RMI_SUCCESS) {
 		if (rmi_ret == RMI_BUSY)
 			return -EBUSY;
@@ -246,6 +254,12 @@ redo_communicate:
 			break;
 		case RMI_DEV_CERTIFICATE:
 			cache_objp = &pf0_ep_dsc->cert_chain.cache;
+			break;
+		case RMI_DEV_INTERFACE_REPORT:
+			cache_objp = &host_tdi->interface_report;
+			break;
+		case RMI_DEV_MEASUREMENTS:
+			cache_objp = &host_tdi->measurements;
 			break;
 		default:
 			return -EINVAL;
@@ -348,9 +362,11 @@ redo_communicate:
 }
 
 static int do_dev_communicate(enum dev_comm_type type,
-		struct pci_tsm *tsm, unsigned long error_state, int *stream_wait)
+		struct pci_tsm *tsm, struct cca_host_tdi *host_tdi,
+		unsigned long error_state, int *stream_wait)
 {
-	int ret, state = error_state;
+	int ret, state;
+	unsigned long rmi_ret;
 	struct rmi_dev_comm_enter *io_enter;
 	struct cca_host_pdev_dsc *pdev_dsc = to_cca_pdev_dsc(tsm->dsm_dev);
 
@@ -360,20 +376,27 @@ static int do_dev_communicate(enum dev_comm_type type,
 	if (stream_wait)
 		*stream_wait = 0;
 
-	ret = _do_dev_communicate(type, tsm, stream_wait);
+	ret = _do_dev_communicate(type, tsm, host_tdi, stream_wait);
 	if (ret) {
 		if (type == PDEV_COMMUNICATE)
 			rmi_pdev_abort(virt_to_phys(pdev_dsc->rmm_pdev));
+		else
+			rmi_vdev_abort(virt_to_phys(host_tdi->rmm_vdev));
+
+		state = error_state;
 	} else {
 		/*
 		 * Some device communication error will transition the
 		 * device to error state. Report that.
 		 */
-		if (type == PDEV_COMMUNICATE) {
-			if (rmi_pdev_get_state(virt_to_phys(pdev_dsc->rmm_pdev),
-					       (enum rmi_pdev_state *)&state))
-				state = error_state;
-		}
+		if (type == PDEV_COMMUNICATE)
+			rmi_ret = rmi_pdev_get_state(virt_to_phys(pdev_dsc->rmm_pdev),
+						     (enum rmi_pdev_state *)&state);
+		else
+			rmi_ret = rmi_vdev_get_state(virt_to_phys(host_tdi->rmm_vdev),
+						     (enum rmi_vdev_state *)&state);
+		if (rmi_ret)
+			state = error_state;
 	}
 
 	if (state == error_state)
@@ -383,12 +406,13 @@ static int do_dev_communicate(enum dev_comm_type type,
 }
 
 static int wait_for_dev_state(enum dev_comm_type type, struct pci_tsm *tsm,
-		unsigned long target_state, unsigned long error_state)
+		struct cca_host_tdi *host_tdi, unsigned long target_state,
+		unsigned long error_state)
 {
 	int state;
 
 	do {
-		state = do_dev_communicate(type, tsm, error_state, NULL);
+		state = do_dev_communicate(type, tsm, host_tdi, error_state, NULL);
 
 		if (state == target_state || state == error_state)
 			return state;
@@ -400,7 +424,8 @@ static int wait_for_dev_state(enum dev_comm_type type, struct pci_tsm *tsm,
 
 static int wait_for_pdev_state(struct pci_tsm *tsm, enum rmi_pdev_state target_state)
 {
-	return wait_for_dev_state(PDEV_COMMUNICATE, tsm, target_state, RMI_PDEV_ERROR);
+	return wait_for_dev_state(PDEV_COMMUNICATE, tsm, NULL, target_state,
+				  RMI_PDEV_ERROR);
 }
 
 static int parse_certificate_chain(struct pci_tsm *tsm)
@@ -606,7 +631,7 @@ static void pdev_collect_identity_workfn(struct work_struct *work)
 
 	guard(mutex)(&pdev_dsc->object_lock);
 
-	do_dev_communicate(PDEV_COMMUNICATE, tsm, RMI_PDEV_ERROR, NULL);
+	do_dev_communicate(PDEV_COMMUNICATE, tsm, NULL, RMI_PDEV_ERROR, NULL);
 
 	/*
 	 * Don't worry about communication error. The caller will look at
@@ -745,7 +770,8 @@ static void stream_connect_workfn(struct work_struct *work)
 redo_communicate:
 	mutex_lock(&pdev_dsc->object_lock);
 
-	state = do_dev_communicate(PDEV_COMMUNICATE, tsm, RMI_PDEV_ERROR, &peer_wait);
+	state = do_dev_communicate(PDEV_COMMUNICATE, tsm, NULL,
+				   RMI_PDEV_ERROR, &peer_wait);
 	if (state != RMI_PDEV_ERROR && peer_wait) {
 
 		if (!stream_work->has_peer) {
