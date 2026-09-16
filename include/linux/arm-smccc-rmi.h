@@ -663,6 +663,53 @@ struct rmi_pdev_stream_params {
 	};
 };
 
+#define RMI_PSMMU_IRQCFG_IRQ_DISABLED	0x0
+#define RMI_PSMMU_IRQCFG_IRQ_WIRED	0x1
+#define RMI_PSMMU_IRQCFG_IRQ_MSI	0x2
+#define RMI_PSMMU_IRQCFG_MASK		GENMASK(1, 0)
+#define RMI_PSMMU_CMDQSYNC_IRQ_WIRED	BIT(2)
+#define RMI_PSMMU_ATS			BIT(3)
+#define RMI_PSMMU_PRI			BIT(4)
+struct rmi_psmmu_info {
+	union {
+		struct {
+			u64 flags;
+			union {
+				u32 gerror_intr_num;
+				u8 padding0[8];
+			};
+			union {
+				u32 eventq_intr_num;
+				u8 padding1[8];
+			};
+			union {
+				u32 priq_intr_num;
+				u8 padding2[8];
+			};
+			union {
+				u32 cmdq_sync_intr_num;
+				u8 padding3[8];
+			};
+		};
+		u8 padding4[0x1000];
+	};
+};
+
+struct rmi_psmmu_params {
+	union {
+		struct {
+			u64 flags;
+			u64 gerr_addr;
+			u64 gerr_data;
+			u64 eventq_addr;
+			u64 eventq_data;
+			u64 priq_addr;
+			u64 priq_data;
+		};
+		u8 padding0[0x1000];
+	};
+};
+
 enum rmi_vdev_state {
 	RMI_VDEV_NEW,
 	RMI_VDEV_UNLOCKED,
