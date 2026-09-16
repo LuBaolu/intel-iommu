@@ -245,7 +245,9 @@ static int cca_vdevice_init(struct iommufd_vdevice *vdev)
 	cca_vdev->tsm_context = context;
 	vdev->tsm_tvm_arch = IOMMU_VDEVICE_TSM_TVM_ARCH_CCA;
 	vdev->tsm_req_op_mask = BIT_ULL(TSM_REQ_VALIDATE_MMIO) |
-				BIT_ULL(TSM_REQ_SET_TDI_STATE);
+				BIT_ULL(TSM_REQ_SET_TDI_STATE) |
+				BIT_ULL(TSM_REQ_OBJECT_INFO) |
+				BIT_ULL(TSM_REQ_READ_OBJECT);
 	vdev->destroy = cca_vdevice_destroy;
 	return 0;
 
@@ -310,6 +312,40 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 		default:
 			return -EINVAL;
 		}
+	}
+	case TSM_REQ_OBJECT_INFO: {
+		struct arm64_vdev_object_size_guest_req req;
+		int object_size;
+
+		if (info->req_len != sizeof(req))
+			return -EINVAL;
+		if (copy_from_user(&req, info->req, sizeof(req)))
+			return -EFAULT;
+		object_size = cca_vdev_get_object_size(host_tdi, pdev,
+						       req.object_type);
+		if (object_size <= 0)
+			return object_size;
+		if (info->resp_len < sizeof(object_size))
+			return -EINVAL;
+		if (copy_to_user(info->resp, &object_size, sizeof(object_size)))
+			return -EFAULT;
+		return info->resp_len - sizeof(object_size);
+	}
+	case TSM_REQ_READ_OBJECT: {
+		struct arm64_vdev_object_read_guest_req req;
+		int len;
+
+		if (info->req_len != sizeof(req))
+			return -EINVAL;
+		if (copy_from_user(&req, info->req, sizeof(req)))
+			return -EFAULT;
+		len = cca_vdev_read_cached_object(host_tdi, pdev,
+						  req.object_type, req.offset,
+						  info->resp_len,
+						  info->resp);
+		if (len <= 0)
+			return len;
+		return info->resp_len - len;
 	}
 	default:
 		return -EINVAL;
