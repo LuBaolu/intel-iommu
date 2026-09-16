@@ -15,6 +15,13 @@
 
 #define RMI_MAX_ADDR_LIST	256
 
+struct rtt_entry {
+	unsigned long walk_level;
+	unsigned long desc;
+	int state;
+	int ripas;
+};
+
 struct rmi_sro_state {
 	struct arm_smccc_1_2_regs regs;
 	int addr_count;
@@ -483,6 +490,34 @@ static inline long rmi_rtt_unprot_map(unsigned long rd,
 		*out_top = regs.a1;
 
 	return ret;
+}
+
+/**
+ * rmi_rtt_read_entry() - Read an RTTE
+ * @rd: PA of the RD
+ * @ipa: IPA for which to read the RTTE
+ * @level: RTT level at which to read the RTTE
+ * @rtt: Output structure describing the RTTE
+ *
+ * Reads a RTTE (Realm Translation Table Entry).
+ *
+ * Return: RMI return code
+ */
+static inline long rmi_rtt_read_entry(unsigned long rd, unsigned long ipa,
+		long level, struct rtt_entry *rtt)
+{
+	struct arm_smccc_1_2_regs regs = {
+		SMC_RMI_RTT_READ_ENTRY, rd, ipa, level
+	};
+
+	rmi_smccc_invoke(&regs);
+
+	rtt->walk_level = regs.a1;
+	rtt->state = regs.a2 & 0xff;
+	rtt->desc = regs.a3;
+	rtt->ripas = regs.a4 & 0xff;
+
+	return regs.a0;
 }
 
 /**

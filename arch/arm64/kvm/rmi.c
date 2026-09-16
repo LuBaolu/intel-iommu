@@ -629,18 +629,27 @@ static int rmi_rtt_dev_unmap(unsigned long rd_phys,
 		unsigned long base, unsigned long top,
 		unsigned long *out_ipa, unsigned long *out_desc,
 		unsigned long *rmi_ret);
+static int realm_get_ripas(struct kvm *kvm, unsigned long addr,
+			   enum rmi_ripas *ripas);
 static int __realm_dev_mem_unmap(struct kvm *kvm, unsigned long start,
 				 unsigned long end, bool may_block);
 
-static void realm_unmap_private_range(struct kvm *kvm,
-				      unsigned long start,
-				      unsigned long end,
-				      bool may_block)
+static int realm_unmap_private_range(struct kvm *kvm,
+				     unsigned long start,
+				     unsigned long end,
+				     bool may_block,
+				     enum rmi_ripas src_ripas)
 {
 	struct realm *realm = &kvm->arch.realm;
 	unsigned long rd = virt_to_phys(realm->rd);
 	unsigned long next_addr, addr;
 	long ret;
+
+	/* Called with mmu_lock held, so RTT entry can't change. */
+	lockdep_assert_held_write(&kvm->mmu_lock);
+
+	if (src_ripas == RMI_DEV)
+		return __realm_dev_mem_unmap(kvm, start, end, may_block);
 
 	for (addr = start; addr < end; addr = next_addr) {
 		unsigned long out_range;
@@ -651,7 +660,7 @@ retry:
 		ret = rmi_rtt_data_unmap(rd, addr, end, flags, 0,
 					 &next_addr, &out_range, NULL);
 		if (WARN_ON(ret < 0))
-			return;
+			return ret;
 
 		if (RMI_RESULT_STATUS(ret) == RMI_ERROR_RTT) {
 			phys_addr_t rtt;
@@ -661,12 +670,12 @@ retry:
 
 			rtt = alloc_rtt(NULL);
 			if (WARN_ON(rtt == PHYS_ADDR_MAX))
-				return;
+				return -ENOMEM;
 			ret = realm_rtt_create(realm, addr,
 					       RMI_RESULT_DATA_LEVEL(ret) + 1, rtt);
 			if (WARN_ON(ret)) {
 				free_rtt(rtt);
-				return;
+				return ret;
 			}
 			goto retry;
 		} else if (WARN_ON(ret)) {
@@ -677,12 +686,15 @@ retry:
 		if (WARN_ON(ret))
 			break;
 
+		//FIXME!! where are we freeing the private page?
 		if (may_block)
 			cond_resched_rwlock_write(&kvm->mmu_lock);
 	}
 
 	realm_fold_rtt_level(realm, get_start_level(realm) + 1,
 			     start, end);
+
+	return 0;
 }
 
 void kvm_realm_unmap_range_filter(struct kvm *kvm, unsigned long start,
@@ -691,6 +703,7 @@ void kvm_realm_unmap_range_filter(struct kvm *kvm, unsigned long start,
 {
 	unsigned long end = start + size;
 	struct realm *realm = &kvm->arch.realm;
+	enum rmi_ripas src_ripas;
 
 	if (!kvm_realm_is_created(kvm))
 		return;
@@ -699,8 +712,13 @@ void kvm_realm_unmap_range_filter(struct kvm *kvm, unsigned long start,
 
 	if (attr_filter & KVM_FILTER_SHARED)
 		realm_unmap_shared_range(kvm, start, end, may_block);
-	if (attr_filter & KVM_FILTER_PRIVATE)
-		realm_unmap_private_range(kvm, start, end, may_block);
+	if (attr_filter & KVM_FILTER_PRIVATE) {
+		/* An unmap request won't mix different RIPAS ranges. */
+		if (realm_get_ripas(kvm, start, &src_ripas))
+			return;
+		realm_unmap_private_range(kvm, start, end, may_block,
+					  src_ripas);
+	}
 }
 
 void kvm_realm_unmap_range(struct kvm *kvm, unsigned long start,
@@ -860,7 +878,7 @@ static int realm_map_protected(struct kvm *kvm,
 	return 0;
 
 err_undelegate:
-	realm_unmap_private_range(kvm, base_ipa, ipa, true);
+	realm_unmap_private_range(kvm, base_ipa, ipa, true, RMI_RAM);
 	/* A range which cannot be undelegated remains owned by the RMM. */
 	WARN_ON(rmi_undelegate_range(base_phys, map_size));
 	return ret < 0 ? ret : -ENXIO;
@@ -1078,7 +1096,7 @@ static int realm_set_ipa_state(struct kvm_vcpu *vcpu,
 	int ret = ripas_change(kvm, vcpu, start, end, RIPAS_SET, top_ipa);
 
 	if (!ret && ripas == RMI_EMPTY && *top_ipa != start)
-		realm_unmap_private_range(kvm, start, *top_ipa, false);
+		realm_unmap_private_range(kvm, start, *top_ipa, false, RMI_RAM);
 
 	return ret;
 }
@@ -1225,6 +1243,22 @@ static bool ripas_range_matches_gmem(struct kvm *kvm, unsigned long start,
 	srcu_read_unlock(&kvm->srcu, idx);
 
 	return matches;
+}
+
+static int realm_get_ripas(struct kvm *kvm, unsigned long addr,
+			   enum rmi_ripas *ripas)
+{
+	struct realm *realm = &kvm->arch.realm;
+	struct rtt_entry rtt_entry;
+	unsigned long rd = virt_to_phys(realm->rd);
+
+	lockdep_assert_held_write(&kvm->mmu_lock);
+
+	if (rmi_rtt_read_entry(rd, addr, KVM_PGTABLE_LAST_LEVEL, &rtt_entry))
+		return -ENOENT;
+
+	*ripas = rtt_entry.ripas;
+	return 0;
 }
 
 static int kvm_complete_ripas_change(struct kvm_vcpu *vcpu)
