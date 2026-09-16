@@ -736,7 +736,34 @@ out:
 	return r;
 }
 
-static long kvm_gmem_set_attributes(struct file *file, void __user *argp)
+int kvm_gmem_set_attributes(struct kvm_memory_slot *slot, gfn_t start,
+			    gfn_t end, u64 attributes)
+{
+	pgoff_t index, err_index;
+	struct inode *inode;
+	struct file *file;
+	int ret;
+
+	if (start >= end || start < slot->base_gfn ||
+	    end > slot->base_gfn + slot->npages ||
+	    attributes & ~KVM_MEMORY_ATTRIBUTE_PRIVATE)
+		return -EINVAL;
+
+	file = kvm_gmem_get_file(slot);
+	if (!file)
+		return -ENOENT;
+
+	index = kvm_gmem_get_index(slot, start);
+	inode = file_inode(file);
+	ret = __kvm_gmem_set_attributes(inode, index, end - start, attributes,
+					&err_index);
+	fput(file);
+
+	return ret;
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_gmem_set_attributes);
+
+static long kvm_gmem_set_attributes_ioctl(struct file *file, void __user *argp)
 {
 	struct gmem_file *f = file->private_data;
 	struct inode *inode = file_inode(file);
@@ -790,7 +817,7 @@ static long kvm_gmem_ioctl(struct file *file, unsigned int ioctl,
 		if (!gmem_in_place_conversion)
 			return -ENOTTY;
 
-		return kvm_gmem_set_attributes(file, (void __user *)arg);
+		return kvm_gmem_set_attributes_ioctl(file, (void __user *)arg);
 	default:
 		return -ENOTTY;
 	}
