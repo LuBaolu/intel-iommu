@@ -253,5 +253,8 @@ int cca_vdev_read_cached_object(struct cca_host_tdi *host_tdi,
 				void __user *user_buf);
 int cca_vdev_update_interface_report(struct cca_host_tdi *host_tdi,
 				     struct pci_dev *pdev);
+int cca_vdev_update_device_measurements(struct cca_host_tdi *host_tdi,
+					struct pci_dev *pdev,
+					unsigned long flags, u8 *nonce);
 
 #endif
