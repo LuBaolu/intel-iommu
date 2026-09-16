@@ -1209,3 +1209,23 @@ static void __maybe_unused vdev_fetch_object_workfn(struct work_struct *work)
 		/* indicate success. This value is not used. */
 		setup_work->cache_size = CACHE_CHUNK_SIZE;
 }
+
+int cca_vdev_device_map(struct cca_host_tdi *host_tdi, struct pci_dev *pdev,
+			unsigned long gpa_base, unsigned long gpa_top,
+			unsigned long pa_base)
+{
+	struct kvm *kvm;
+	phys_addr_t rmm_pdev_phys;
+	phys_addr_t rmm_vdev_phys;
+	struct cca_host_pdev_dsc *pdev_dsc;
+
+	cca_vdev_assert_locked(pdev);
+
+	pdev_dsc = to_cca_pdev_dsc(pdev->tsm->dsm_dev);
+	kvm = host_tdi->kvm;
+	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
+	rmm_pdev_phys = virt_to_phys(pdev_dsc->rmm_pdev);
+
+	return realm_dev_mem_map(kvm, rmm_pdev_phys, rmm_vdev_phys,
+				 gpa_base, gpa_top, pa_base);
+}
