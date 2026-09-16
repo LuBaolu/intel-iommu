@@ -6,6 +6,7 @@
 #ifndef _VIRT_COCO_RMM_DA_H_
 #define _VIRT_COCO_RMM_DA_H_
 
+#include <linux/arm-smccc-rhi.h>
 #include <linux/arm-smccc-rmi.h>
 #include <linux/arm-rmi-cmds.h>
 #include <linux/pci.h>
@@ -116,6 +117,17 @@ struct cca_host_fn_dsc {
 
 enum dev_comm_type {
 	PDEV_COMMUNICATE = 0x1,
+};
+
+struct cca_host_tdi {
+	struct kvm *kvm;
+	struct realm *realm;
+	void *rmm_vdev;
+	/* Protected by the PCI TSM PF0 lock. */
+	enum rmi_vdev_state state;
+	/* protected by cca_host_pdev_dsc.object_lock */
+	struct cache_object *interface_report;
+	struct cache_object *measurements;
 };
 
 static inline int insert_addr_range_sorted(struct rmi_addr_range *addr_range,
