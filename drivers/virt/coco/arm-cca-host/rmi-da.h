@@ -29,6 +29,9 @@ struct dev_comm_work {
 	struct pci_tsm *tsm;
 	struct cca_host_tdi *host_tdi;
 	int target_state;
+	u8 *cache_buf;
+	int *cache_offset;
+	int cache_size;
 	struct work_struct work;
 };
 
