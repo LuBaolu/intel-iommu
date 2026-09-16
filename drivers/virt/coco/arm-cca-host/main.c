@@ -337,6 +337,10 @@ static int cca_tsm_connect(struct pci_dev *pdev)
 		ide->partner[PCI_IDE_EP].default_stream = 1;
 		pci_ide_stream_setup(pdev, ide);
 		pci_ide_stream_setup(rp, ide);
+
+		ret = tsm_ide_stream_register(ide);
+		if (ret)
+			goto err_tsm;
 	}
 
 	ret = init_dev_communication_buffers(pdev, &pf0_ep_dsc->pdev.comm_data);
@@ -373,6 +377,9 @@ pdev_destroy:
 err_pdev_create:
 	free_dev_communication_buffers(&pf0_ep_dsc->pdev.comm_data);
 err_comm_buff:
+	if (cca_pdev_need_sel_ide_streams(pdev))
+		tsm_ide_stream_unregister(ide);
+err_tsm:
 	if (cca_pdev_need_sel_ide_streams(pdev)) {
 		pci_ide_stream_teardown(rp, ide);
 		pci_ide_stream_teardown(pdev, ide);
