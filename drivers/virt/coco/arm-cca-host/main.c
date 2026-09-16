@@ -10,7 +10,6 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/tsm.h>
-#include <linux/vmalloc.h>
 #include <linux/cleanup.h>
 #include <linux/pci-doe.h>
 
@@ -143,6 +142,9 @@ static int cca_root_port_pdev_create(struct pci_dev *rp, struct tsm_dev *tsm_dev
 {
 	int ret;
 	struct cca_host_rp_dsc *rp_dsc;
+
+	/* We are under pci_tsm_rwsem. */
+	lockdep_assert_held_write(&pci_tsm_rwsem);
 
 	rp_dsc = kzalloc_obj(*rp_dsc);
 	if (!rp_dsc)
