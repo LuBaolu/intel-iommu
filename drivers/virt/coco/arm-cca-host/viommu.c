@@ -247,6 +247,26 @@ static size_t cca_viommu_get_size(struct device *dev,
 	return VIOMMU_STRUCT_SIZE(struct cca_viommu, core);
 }
 
+static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
+				   struct tsm_guest_req_info *info,
+				   u64 *tsm_code)
+{
+	struct cca_vdevice *cca_vdev =
+		container_of(vdev, struct cca_vdevice, core);
+	struct pci_tsm_context *context = cca_vdev->tsm_context;
+	struct pci_tsm_pf0 *pf0;
+
+	(void)tsm_code;
+	if (!context)
+		return -EOPNOTSUPP;
+	pf0 = pci_tsm_context_pf0(context);
+	guard(mutex)(&pf0->lock);
+	switch (info->op) {
+	default:
+		return -EINVAL;
+	}
+}
+
 static const struct iommufd_viommu_ops cca_viommu_ops = {
 	.flags = IOMMUFD_VIOMMU_NO_HWPT,
 	.get_viommu_size = cca_viommu_get_size,
@@ -254,6 +274,7 @@ static const struct iommufd_viommu_ops cca_viommu_ops = {
 	.destroy = cca_viommu_destroy,
 	.vdevice_size = VDEVICE_STRUCT_SIZE(struct cca_vdevice, core),
 	.vdevice_init = cca_vdevice_init,
+	.vdevice_tsm_req = cca_vdevice_tsm_req,
 };
 
 const struct iommufd_viommu_ops *
