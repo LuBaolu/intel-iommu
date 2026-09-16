@@ -1719,4 +1719,14 @@ struct kvm_arm_rmi_populate {
 	__u32 reserved;
 };
 
+/* Initialize a guest_memfd-backed Realm IPA range to RIPAS_RAM. */
+#define KVM_ARM_RMI_INIT_RIPAS	_IOW(KVMIO, 0xd8, struct kvm_arm_rmi_init_ripas)
+
+struct kvm_arm_rmi_init_ripas {
+	__u64 base;
+	__u64 size;
+	__u64 flags;
+	__u64 reserved[5];
+};
+
 #endif /* __LINUX_KVM_H */

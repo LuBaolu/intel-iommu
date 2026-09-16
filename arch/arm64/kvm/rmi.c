@@ -1127,31 +1127,6 @@ static int realm_ensure_created(struct kvm *kvm)
 	return realm_create_rd(kvm);
 }
 
-static int set_ripas_of_protected_regions(struct kvm *kvm)
-{
-	struct kvm_memslots *slots;
-	struct kvm_memory_slot *memslot;
-	int idx, bkt;
-	int ret = 0;
-
-	lockdep_assert_held(&kvm->arch.config_lock);
-
-	idx = srcu_read_lock(&kvm->srcu);
-
-	slots = kvm_memslots(kvm);
-	kvm_for_each_memslot(memslot, bkt, slots) {
-		if (!kvm_slot_has_gmem(memslot))
-			continue;
-
-		ret = realm_init_ipa_state(kvm, memslot->base_gfn,
-					   memslot->npages);
-		if (ret)
-			break;
-	}
-	srcu_read_unlock(&kvm->srcu, idx);
-
-	return ret;
-}
 int kvm_realm_ensure_created(struct kvm *kvm)
 {
 	int ret;
@@ -1165,6 +1140,69 @@ int kvm_realm_ensure_created(struct kvm *kvm)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(kvm_realm_ensure_created);
+
+int kvm_arm_rmi_init_ripas(struct kvm *kvm,
+			   struct kvm_arm_rmi_init_ripas *args)
+{
+	struct kvm_memory_slot *memslot;
+	unsigned long mmu_seq;
+	unsigned long start, end;
+	gfn_t start_gfn, end_gfn;
+	int ret;
+
+	if (args->flags || memchr_inv(args->reserved, 0,
+				      sizeof(args->reserved)) ||
+	    !args->size || args->base + args->size < args->base ||
+	    !PAGE_ALIGNED(args->base) || !PAGE_ALIGNED(args->size))
+		return -EINVAL;
+
+	start = args->base;
+	end = start + args->size;
+	start_gfn = gpa_to_gfn(start);
+	end_gfn = gpa_to_gfn(end);
+
+	mutex_lock(&kvm->slots_lock);
+	mutex_lock(&kvm->arch.config_lock);
+
+	ret = realm_ensure_created(kvm);
+	if (ret)
+		goto out_unlock;
+
+	memslot = gfn_to_memslot(kvm, start_gfn);
+	if (!kvm_slot_has_gmem(memslot) ||
+	    end_gfn > memslot->base_gfn + memslot->npages) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
+	ret = kvm_gmem_set_attributes(memslot, start_gfn, end_gfn,
+				      KVM_MEMORY_ATTRIBUTE_PRIVATE);
+	if (ret)
+		goto out_unlock;
+
+	mmu_seq = kvm->mmu_invalidate_seq;
+	smp_rmb();
+	if (!kvm_gmem_range_has_attributes(memslot, start_gfn, end_gfn,
+					   KVM_MEMORY_ATTRIBUTE_PRIVATE)) {
+		ret = -EAGAIN;
+		goto out_unlock;
+	}
+
+	write_lock(&kvm->mmu_lock);
+	if (mmu_invalidate_retry(kvm, mmu_seq)) {
+		write_unlock(&kvm->mmu_lock);
+		ret = -EAGAIN;
+		goto out_unlock;
+	}
+	ret = realm_init_ipa_state(kvm, start_gfn, end_gfn - start_gfn);
+	write_unlock(&kvm->mmu_lock);
+
+out_unlock:
+	mutex_unlock(&kvm->arch.config_lock);
+	mutex_unlock(&kvm->slots_lock);
+
+	return ret;
+}
 
 int kvm_arm_rmi_populate(struct kvm *kvm,
 			 struct kvm_arm_rmi_populate *args)
@@ -2113,10 +2151,6 @@ int kvm_activate_realm(struct kvm *kvm)
 		if (ret)
 			goto out_vm_dead;
 	}
-
-	ret = set_ripas_of_protected_regions(kvm);
-	if (ret)
-		goto out_vm_dead;
 
 	ret = rmi_realm_activate(virt_to_phys(realm->rd));
 	if (ret) {
