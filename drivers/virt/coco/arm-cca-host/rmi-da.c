@@ -1089,3 +1089,96 @@ int cca_pdev_purge_stream_key(struct pci_dev *pdev1,
 
 	return submit_stream_work(pdev1, pdev2, stream_handle);
 }
+
+int cca_vdev_device_unlock(struct cca_host_tdi *host_tdi,
+			   struct pci_dev *pdev)
+{
+	struct pci_dev *pf0_dev = pdev->tsm->dsm_dev;
+	phys_addr_t rmm_pdev_phys;
+	phys_addr_t rmm_vdev_phys;
+	struct cca_host_pdev_dsc *pdev_dsc;
+	phys_addr_t rd_phys;
+	int ret = 0;
+	int rc;
+
+	cca_vdev_assert_locked(pdev);
+
+	if (host_tdi->state == RMI_VDEV_UNLOCKED ||
+	    host_tdi->state == RMI_VDEV_NEW)
+		return -EINVAL;
+
+	rd_phys = virt_to_phys(host_tdi->realm->rd);
+	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
+	pdev_dsc = to_cca_pdev_dsc(pf0_dev);
+	rmm_pdev_phys = virt_to_phys(pdev_dsc->rmm_pdev);
+	if (rmi_vdev_unlock(rd_phys, rmm_pdev_phys, rmm_vdev_phys))
+		return -ENXIO;
+
+	/* RMM now considers the VDEV unlocked, even if communication fails. */
+	host_tdi->state = RMI_VDEV_UNLOCKED;
+
+	if (rmm_has_reg2_feature(RMI_FEATURE_REGISTER_2_VDEV_KROU)) {
+		struct pci_dev *rp = pcie_find_root_port(pf0_dev);
+		struct cca_host_pf0_ep_dsc *pf0_ep_dsc =
+			to_cca_pf0_ep_dsc(pf0_dev);
+		unsigned long stream_handle = pf0_ep_dsc->stream_handle;
+
+		rc = submit_vdev_state_transition_work(host_tdi, pdev, RMI_VDEV_KEY_REFRESH);
+		if (rc && !ret)
+			ret = rc;
+
+		rc = cca_pdev_refresh_stream_key(pf0_dev, rp, stream_handle);
+		if (rc && !ret)
+			ret = rc;
+
+		rc = cca_pdev_purge_stream_key(pf0_dev, rp, stream_handle);
+		if (rc && !ret)
+			ret = rc;
+	}
+
+	rc = submit_vdev_state_transition_work(host_tdi, pdev, RMI_VDEV_UNLOCKED);
+	if (rc && !ret)
+		ret = rc;
+
+	return ret;
+}
+
+void cca_vdev_destroy(struct cca_host_tdi *host_tdi, struct realm *realm,
+		      struct pci_dev *pdev, struct pci_dev *pf0_dev)
+{
+	phys_addr_t rmm_pdev_phys;
+	phys_addr_t rmm_vdev_phys;
+	struct cca_host_pdev_dsc *pdev_dsc;
+	phys_addr_t rd_phys = virt_to_phys(realm->rd);
+	int ret;
+
+	cca_vdev_assert_locked(pdev);
+	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
+
+	if (host_tdi->state != RMI_VDEV_UNLOCKED) {
+		ret = realm_dev_mem_unmap(host_tdi->kvm, rmm_vdev_phys);
+		if (ret) {
+			pci_err(pdev,
+				"failed to unmap vdev memory before destroy (%d)\n",
+				ret);
+			return;
+		}
+
+		ret = cca_vdev_device_unlock(host_tdi, pdev);
+		if (ret)
+			pci_err(pdev, "failed to unlock vdev (%d)\n", ret);
+	}
+
+	pdev_dsc = to_cca_pdev_dsc(pf0_dev);
+	rmm_pdev_phys = virt_to_phys(pdev_dsc->rmm_pdev);
+
+	/* Try to destroy even in case of error */
+	if (rmi_vdev_destroy(rd_phys, rmm_pdev_phys, rmm_vdev_phys))
+		pci_err(pdev, "failed to destroy vdev\n");
+
+	if (!rmi_undelegate_page(rmm_vdev_phys))
+		free_page((unsigned long)host_tdi->rmm_vdev);
+
+	host_tdi->rmm_vdev = NULL;
+	host_tdi->realm = NULL;
+}
