@@ -428,6 +428,14 @@ static int wait_for_pdev_state(struct pci_tsm *tsm, enum rmi_pdev_state target_s
 				  RMI_PDEV_ERROR);
 }
 
+static int wait_for_vdev_state(struct pci_tsm *tsm,
+			       struct cca_host_tdi *host_tdi,
+			       enum rmi_vdev_state target_state)
+{
+	return wait_for_dev_state(VDEV_COMMUNICATE, tsm, host_tdi,
+				  target_state, RMI_VDEV_ERROR);
+}
+
 static int parse_certificate_chain(struct pci_tsm *tsm)
 {
 	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
@@ -616,6 +624,52 @@ static int submit_pdev_state_transition_work(struct pci_dev *pdev,
 	if (state != target_state)
 		/* no specific error for this */
 		return -1;
+	return 0;
+}
+
+static void vdev_state_transition_workfn(struct work_struct *work)
+{
+	unsigned long state;
+	struct pci_tsm *tsm;
+	struct dev_comm_work *setup_work;
+	struct cca_host_pdev_dsc *pdev_dsc;
+
+	setup_work = container_of(work, struct dev_comm_work, work);
+	tsm = setup_work->tsm;
+
+	pdev_dsc = to_cca_pdev_dsc(tsm->dsm_dev);
+	guard(mutex)(&pdev_dsc->object_lock);
+
+	state = wait_for_vdev_state(tsm, setup_work->host_tdi,
+				    setup_work->target_state);
+	WARN_ON(state != setup_work->target_state);
+}
+
+static int submit_vdev_state_transition_work(struct cca_host_tdi *host_tdi,
+					     struct pci_dev *pdev,
+					     int target_state)
+{
+	enum rmi_vdev_state state;
+	struct dev_comm_work comm_work;
+	struct cca_host_comm_data *comm_data = to_cca_comm_data(pdev);
+
+	INIT_WORK_ONSTACK(&comm_work.work, vdev_state_transition_workfn);
+	comm_work.tsm = pdev->tsm;
+	comm_work.host_tdi = host_tdi;
+	comm_work.target_state = target_state;
+
+	queue_work(comm_data->work_queue, &comm_work.work);
+
+	flush_work(&comm_work.work);
+	destroy_work_on_stack(&comm_work.work);
+
+	/* check if we reached target state */
+	if (rmi_vdev_get_state(virt_to_phys(host_tdi->rmm_vdev), &state))
+		return -ENXIO;
+
+	if (state != target_state)
+		/* Protocol didn't take it to expected target state */
+		return -EPROTO;
 	return 0;
 }
 
@@ -882,4 +936,121 @@ int cca_pdev_disconnect_stream(struct pci_dev *pdev1,
 		return -EIO;
 
 	return submit_stream_work(pdev1, pdev2, stream_handle);
+}
+
+static unsigned long pci_get_tdi_id(struct pci_dev *pdev)
+{
+	/* requester segment is marked reserved. */
+	return pci_dev_id(pdev);
+}
+
+static void cca_vdev_assert_locked(struct pci_dev *pdev)
+{
+	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
+
+	pf0_ep_dsc = to_cca_pf0_ep_dsc(pdev->tsm->dsm_dev);
+	lockdep_assert_held(&pf0_ep_dsc->pci.lock);
+}
+
+static void init_vdev_params_mmio_range(struct pci_dev *pdev,
+		struct rmi_vdev_params *params)
+{
+	int index = 0;
+
+	for (int i = 0; i < PCI_STD_NUM_BARS; i++) {
+		struct resource *res = &pdev->resource[i];
+
+		if (!(res->flags & IORESOURCE_MEM))
+			continue;
+
+		if (resource_size(res) == 0)
+			continue;
+
+		index = insert_addr_range_sorted(params->addr_range, index,
+						 res->start, res->end + 1);
+	}
+
+	params->num_addr_range = index;
+}
+
+
+void *cca_vdev_create(struct cca_host_tdi *host_tdi, struct realm *realm,
+		      struct pci_dev *pdev, struct pci_dev *pf0_dev,
+		      u32 guest_rid)
+{
+	phys_addr_t rd_phys = virt_to_phys(realm->rd);
+	struct rmi_vdev_params *params = NULL;
+	struct cca_host_pdev_dsc *pdev_dsc;
+	phys_addr_t rmm_pdev_phys;
+	phys_addr_t rmm_vdev_phys;
+	bool should_free = true;
+	void *rmm_vdev;
+	int ret;
+
+	cca_vdev_assert_locked(pdev);
+
+	pdev_dsc = to_cca_pdev_dsc(pf0_dev);
+	if (!pdev_dsc->rmm_pdev) {
+		ret = -EINVAL;
+		goto err_out;
+	}
+
+	rmm_vdev = (void *)get_zeroed_page(GFP_KERNEL);
+	if (!rmm_vdev) {
+		ret =  -ENOMEM;
+		goto err_out;
+	}
+
+	rmm_vdev_phys = virt_to_phys(rmm_vdev);
+	if (rmi_delegate_page(rmm_vdev_phys)) {
+		ret = -ENXIO;
+		goto err_granule_delegate;
+	}
+
+	params = (struct rmi_vdev_params *)get_zeroed_page(GFP_KERNEL);
+	if (!params) {
+		ret = -ENOMEM;
+		goto err_params_alloc;
+	}
+
+	params->flags = 0;
+	params->vdev_id = guest_rid;
+	params->tdi_id = pci_get_tdi_id(pdev);
+
+	init_vdev_params_mmio_range(pdev, params);
+
+	rmm_pdev_phys = virt_to_phys(pdev_dsc->rmm_pdev);
+	if (rmi_vdev_create(rd_phys, rmm_pdev_phys,
+			    rmm_vdev_phys, virt_to_phys(params))) {
+		ret = -ENXIO;
+		goto err_vdev_create;
+	}
+
+	/* Set up host_tdi before calling device communicate. */
+	host_tdi->rmm_vdev = rmm_vdev;
+	host_tdi->realm = realm;
+	host_tdi->state = RMI_VDEV_NEW;
+
+	ret = submit_vdev_state_transition_work(host_tdi, pdev,
+						RMI_VDEV_UNLOCKED);
+	/* failure is treated as rmi_vdev_create failure */
+	if (ret)
+		goto err_vdev_comm;
+	host_tdi->state = RMI_VDEV_UNLOCKED;
+
+	free_page((unsigned long)params);
+	return rmm_vdev;
+
+err_vdev_comm:
+	rmi_vdev_destroy(rd_phys, rmm_pdev_phys, rmm_vdev_phys);
+err_vdev_create:
+	free_page((unsigned long)params);
+err_params_alloc:
+	if (rmi_undelegate_page(rmm_vdev_phys))
+		should_free = false;
+err_granule_delegate:
+	if (should_free)
+		free_page((unsigned long)rmm_vdev);
+err_out:
+	return ERR_PTR(ret);
 }
