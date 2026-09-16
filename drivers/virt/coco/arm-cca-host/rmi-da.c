@@ -1229,3 +1229,58 @@ int cca_vdev_device_map(struct cca_host_tdi *host_tdi, struct pci_dev *pdev,
 	return realm_dev_mem_map(kvm, rmm_pdev_phys, rmm_vdev_phys,
 				 gpa_base, gpa_top, pa_base);
 }
+
+int cca_vdev_device_start(struct cca_host_tdi *host_tdi,
+			  struct pci_dev *pdev)
+{
+	phys_addr_t rmm_pdev_phys;
+	phys_addr_t rmm_vdev_phys;
+	struct cca_host_pdev_dsc *pdev_dsc;
+	struct realm *realm;
+	phys_addr_t rd_phys;
+
+	cca_vdev_assert_locked(pdev);
+
+	if (host_tdi->state != RMI_VDEV_LOCKED)
+		return -EINVAL;
+
+	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
+	realm = &host_tdi->kvm->arch.realm;
+	rd_phys = virt_to_phys(realm->rd);
+
+	pdev_dsc = to_cca_pdev_dsc(pdev->tsm->dsm_dev);
+	rmm_pdev_phys = virt_to_phys(pdev_dsc->rmm_pdev);
+
+	if (rmi_vdev_start(rd_phys, rmm_pdev_phys, rmm_vdev_phys))
+		return -ENXIO;
+	host_tdi->state = RMI_VDEV_STARTED;
+	return submit_vdev_state_transition_work(host_tdi, pdev,
+						 RMI_VDEV_STARTED);
+}
+
+int cca_vdev_device_lock(struct cca_host_tdi *host_tdi,
+			 struct pci_dev *pdev)
+{
+	struct cca_host_pdev_dsc *pdev_dsc;
+	phys_addr_t rmm_pdev_phys;
+	phys_addr_t rmm_vdev_phys;
+	phys_addr_t rd_phys;
+
+	cca_vdev_assert_locked(pdev);
+
+	if (host_tdi->state != RMI_VDEV_UNLOCKED)
+		return -EINVAL;
+
+	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
+	rd_phys = virt_to_phys(host_tdi->realm->rd);
+	pdev_dsc = to_cca_pdev_dsc(pdev->tsm->dsm_dev);
+	rmm_pdev_phys = virt_to_phys(pdev_dsc->rmm_pdev);
+
+	if (rmi_vdev_lock(rd_phys, rmm_pdev_phys, rmm_vdev_phys))
+		return -ENXIO;
+
+	/* Ensure teardown unlocks the VDEV if device communication fails. */
+	host_tdi->state = RMI_VDEV_LOCKED;
+	return submit_vdev_state_transition_work(host_tdi, pdev,
+						 RMI_VDEV_LOCKED);
+}
