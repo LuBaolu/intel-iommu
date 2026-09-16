@@ -1,0 +1,83 @@
+coco/TSM: Implement host-side support for Arm CCA TDISP setup
+
+This patch series implements the host-side changes needed for end-to-end
+Arm CCA TDISP setup. It adds the RMI/RHI plumbing required to create and
+manage Realm vdev objects, service device-attestation object requests, and
+complete the KVM/RMM flows needed for device run-time transitions.
+
+The series is based on the RMM 2.0bet3 specification [1] and the
+RHI v1.0 BET1 specification [5].
+
+At a high level, the series adds support for:
+- host-side vdev communication and lifecycle management
+- host handling of RHI DA object read/size requests
+- host-side fetching and caching of interface reports and measurements
+- IOMMUFD guest-request dispatch through the CCA-owned Realm vIOMMU
+- KVM handling of map/validation exits and teardown on granule destroy
+- vdev transition to TDISP RUN state
+- enabling DA in Realm create parameters
+
+The series builds upon the TSM framework patches posted at [2] and depends on
+the KVM CCA patchset [3]. It also depends on the IOMMUFD provider series and
+the Arm pSMMU series. CCA-host registers its Realm provider directly with
+IOMMUFD and reference-counts active pSMMUs. The first user activates the
+pSMMU, and the last user deactivates it. PCI/TSM contexts retain per-function
+bound status throughout the vdevice lifetime.
+
+The helper patches separately introduce communication, vdev objects, key
+refresh/purge, unlock/destroy, cached-object refresh, mapping validation,
+RUN transitions, object reads, reports and measurements. Request dispatch
+is added afterwards in one patch per operation group.
+
+A git repository containing all related changes is
+available at [4]. kvmtool repo is at [6]
+
+Previous posting:
+Changes from v3:
+https://lore.kernel.org/all/20260312080743.3487326-1-aneesh.kumar@kernel.org
+* updated the patches to follow the RMM 2.0bet1 specification
+* moved vdev request-exit handling to the last patch in the series. This is
+  expected to be dropped once the corresponding spec update lands
+* dropped the vdev and pdev arguments from rmi_rtt_dev_validate(). The spec
+  update for that change is still pending. The validation call is now made
+  from the REC enter path
+* added a response field to KVM_EXIT_ARM64_TIO so the VMM can pass the ioctl
+  return status back to the exit handler
+* dropped vcpu_fd from arm64_vdev_device_memmap_guest_req. Once vdev request
+  handling is removed from the series, the ioctl path will no longer need
+  vcpu_fd
+* reworked the host-side vdev lifecycle to better match the RMM 2.0bet1 flow,
+* updated the vdev flows to match the revised interfaces: populate MMIO BAR
+  ranges in rmi_vdev_create(), rename the interface-report and measurement
+  update commands, and drop vcpu_fd from the guest MMIO map request path
+
+Changes from v1:
+* rebase to latest kernel and core TSM changes
+* address review feedback
+
+rfc-v1: https://lore.kernel.org/all/20250728135216.48084-1-aneesh.kumar@kernel.org
+There is no rfc-v2 posting. This series is marked rfc-v3 to stay aligned
+with the rest of the CCA patchsets that are being posted as v3.
+
+[1] https://developer.arm.com/documentation/den0137/2-0bet3/
+[2] https://lore.kernel.org/all/20260303000207.1836586-1-dan.j.williams@intel.com
+[3] https://lore.kernel.org/all/20260318155413.793430-1-steven.price@arm.com
+[4] https://gitlab.arm.com/linux-arm/linux-cca.git cca/topics/cca-tdisp-upstream-rfc-v4
+[5] https://developer.arm.com/documentation/den0148/latest/
+[6] https://gitlab.arm.com/linux-arm/kvmtool-cca.git cca/topics/cca-tdisp-upstream-rfc-v4
+
+Cc: Alexey Kardashevskiy <aik@amd.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Joerg Roedel <joro@8bytes.org>
+Cc: Jonathan Cameron <jic23@kernel.org>
+Cc: Marc Zyngier <maz@kernel.org>
+Cc: Nicolin Chen <nicolinc@nvidia.com>
+Cc: Pranjal Shrivastava <praan@google.com>
+Cc: Robin Murphy <robin.murphy@arm.com>
+Cc: Samuel Ortiz <sameo@rivosinc.com>
+Cc: Steven Price <steven.price@arm.com>
+Cc: Suzuki K Poulose <Suzuki.Poulose@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Xu Yilun <yilun.xu@linux.intel.com>
