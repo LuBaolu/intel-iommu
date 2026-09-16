@@ -5,6 +5,7 @@
 
 #include <linux/arm-rmi-cmds.h>
 #include <linux/arm-smmu-v3.h>
+#include <linux/bits.h>
 #include <linux/cleanup.h>
 #include <linux/iommu.h>
 #include <linux/iommufd.h>
@@ -14,8 +15,10 @@
 #include <linux/pci-tsm.h>
 #include <linux/slab.h>
 #include <linux/tsm.h>
+#include <linux/uaccess.h>
 
 #include <asm/kvm_emulate.h>
+#include <uapi/asm/rmi-da.h>
 #include "rmi-da.h"
 
 struct cca_psmmu {
@@ -233,6 +236,7 @@ static int cca_vdevice_init(struct iommufd_vdevice *vdev)
 		goto out_put_context;
 	cca_vdev->tsm_context = context;
 	vdev->tsm_tvm_arch = IOMMU_VDEVICE_TSM_TVM_ARCH_CCA;
+	vdev->tsm_req_op_mask = BIT_ULL(TSM_REQ_VALIDATE_MMIO);
 	vdev->destroy = cca_vdevice_destroy;
 	return 0;
 
@@ -253,15 +257,29 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 {
 	struct cca_vdevice *cca_vdev =
 		container_of(vdev, struct cca_vdevice, core);
+	struct cca_host_tdi *host_tdi = &cca_vdev->host_tdi;
 	struct pci_tsm_context *context = cca_vdev->tsm_context;
 	struct pci_tsm_pf0 *pf0;
+	struct pci_dev *pdev;
 
 	(void)tsm_code;
 	if (!context)
 		return -EOPNOTSUPP;
+
+	pdev = to_pci_dev(iommufd_vdevice_to_device(vdev));
 	pf0 = pci_tsm_context_pf0(context);
 	guard(mutex)(&pf0->lock);
 	switch (info->op) {
+	case TSM_REQ_VALIDATE_MMIO: {
+		struct arm64_vdev_validate_mmio_guest_req req;
+
+		if (info->req_len != sizeof(req))
+			return -EINVAL;
+		if (copy_from_user(&req, info->req, sizeof(req)))
+			return -EFAULT;
+		return cca_vdev_device_map(host_tdi, pdev, req.gpa_base,
+					  req.gpa_top, req.pa_base);
+	}
 	default:
 		return -EINVAL;
 	}
