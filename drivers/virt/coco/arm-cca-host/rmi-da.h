@@ -230,5 +230,9 @@ int cca_pdev_disconnect_stream(struct pci_dev *pdev1,
 void *cca_vdev_create(struct cca_host_tdi *host_tdi, struct realm *realm,
 		      struct pci_dev *pdev, struct pci_dev *pf0_dev,
 		      u32 guest_rid);
+int cca_pdev_refresh_stream_key(struct pci_dev *pdev1,
+		struct pci_dev *pdev2, unsigned long stream_handle);
+int cca_pdev_purge_stream_key(struct pci_dev *pdev1,
+		struct pci_dev *pdev2, unsigned long stream_handle);
 
 #endif
