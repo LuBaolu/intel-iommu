@@ -6810,6 +6810,35 @@ populated data is hashed and added to the guest's Realm Initial Measurement
 (RIM) stored by the RMM. This can then be retrieved by the guest (using the RSI
 interface) to present to an attestation server.
 
+4.147 KVM_ARM_RMI_INIT_RIPAS
+----------------------------
+
+:Capability: KVM_CAP_ARM_RMI
+:Architectures: arm64
+:Type: vm ioctl
+:Parameters: struct kvm_arm_rmi_init_ripas (in)
+:Returns: 0 on success, < 0 on error
+
+::
+
+  struct kvm_arm_rmi_init_ripas {
+	__u64 base;
+	__u64 size;
+	__u64 flags;
+	__u64 reserved[5];
+  };
+
+Initialize a guest_memfd-backed Realm IPA range to RIPAS_RAM before Realm
+activation. KVM also converts the corresponding guest_memfd range to private
+as part of the operation. The range must be page aligned and contained within
+a single guest_memfd-backed memslot. `flags` and `reserved` must be zero.
+
+Calling this ioctl is optional. An unpopulated range which is not initialized
+through this ioctl retains its initial RIPAS_EMPTY state. A subsequent guest
+request to change such a range to RIPAS_RAM exits to userspace with
+KVM_EXIT_MEMORY_FAULT. Conversely, userspace must not rely on receiving a
+RIPAS change exit for a range initialized by this ioctl.
+
 .. _kvm_run:
 
 5. The kvm_run structure
