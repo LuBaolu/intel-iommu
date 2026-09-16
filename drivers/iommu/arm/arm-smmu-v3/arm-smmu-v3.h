@@ -13,10 +13,12 @@
 #include <linux/iommufd.h>
 #include <linux/kernel.h>
 #include <linux/mmzone.h>
+#include <linux/refcount.h>
 #include <linux/sizes.h>
 
 struct arm_smmu_device;
 struct arm_vsmmu;
+extern const struct iommu_ops arm_smmu_ops;
 
 /* MMIO registers */
 #define ARM_SMMU_IDR0			0x0
@@ -1323,4 +1325,5 @@ static inline int arm_vmaster_report_event(struct arm_smmu_vmaster *vmaster,
 #endif /* CONFIG_ARM_SMMU_V3_IOMMUFD */
 
 void arm_smmu_setup_realm_irqs(struct arm_smmu_device *smmu);
+
 #endif /* _ARM_SMMU_V3_H */
