@@ -1089,14 +1089,36 @@ out:
 static int realm_set_ipa_state(struct kvm_vcpu *vcpu,
 			       unsigned long start,
 			       unsigned long end,
-			       unsigned long ripas,
+			       enum rmi_ripas src_ripas,
+			       enum rmi_ripas target_ripas,
 			       unsigned long *top_ipa)
 {
 	struct kvm *kvm = vcpu->kvm;
-	int ret = ripas_change(kvm, vcpu, start, end, RIPAS_SET, top_ipa);
+	int ret;
 
-	if (!ret && ripas == RMI_EMPTY && *top_ipa != start)
-		realm_unmap_private_range(kvm, start, *top_ipa, false, RMI_RAM);
+	/*
+	 * We use the RIPAS value to decide between a data_destroy or a
+	 * dev_mem_unmap. Hence call realm_unmap_private_range() before
+	 * ripas_change().
+	 *
+	 * Technically, for private RAM, we don't need to call
+	 * realm_unmap_private_range(), because any RIPAS change via RSI would
+	 * trigger a memory fault exit. That would, in turn, invalidate the
+	 * guest's memfd range, which then triggers realm_unmap_private_range()
+	 * automatically.
+	 *
+	 * However, this doesn’t apply to RIPAS_DEV, because we currently
+	 * lack a user-space API to call realm_dev_mem_unmap() in response to a
+	 * memory fault exit. Therefore, the unmap must happen explicitly before
+	 * the RIPAS change.
+	 */
+	if (target_ripas == RMI_EMPTY) {
+		ret = realm_unmap_private_range(kvm, start, end, false,
+						src_ripas);
+		if (ret)
+			return ret;
+	}
+	ret = ripas_change(kvm, vcpu, start, end, RIPAS_SET, top_ipa);
 
 	return ret;
 }
@@ -1262,27 +1284,47 @@ out_unlock:
 	return ret;
 }
 
-static bool ripas_range_matches_gmem(struct kvm *kvm, unsigned long start,
-				     unsigned long end, unsigned long ripas)
+static bool realm_ripas_attributes_match(struct kvm_vcpu *vcpu,
+					 unsigned long start,
+					 unsigned long end,
+					 enum rmi_ripas ripas,
+					 unsigned long *mmu_seq)
 {
-	bool is_private = ripas == RMI_RAM;
-	gfn_t gfn, end_gfn;
-	bool matches = true;
+	struct kvm *kvm = vcpu->kvm;
+	gfn_t gfn = gpa_to_gfn(start);
+	gfn_t end_gfn = gpa_to_gfn(end);
+	u64 attributes = ripas == RMI_RAM ? KVM_MEMORY_ATTRIBUTE_PRIVATE : 0;
+	bool match = true;
 	int idx;
 
+	/* RIPAS_DEV is not backed by ordinary guest_memfd RAM. */
+	if (ripas == RMI_DEV)
+		return true;
+
+	*mmu_seq = kvm->mmu_invalidate_seq;
+	smp_rmb();
 	idx = srcu_read_lock(&kvm->srcu);
-	end_gfn = gpa_to_gfn(end);
-	for (gfn = gpa_to_gfn(start); gfn < end_gfn; gfn++) {
-		if (kvm_gmem_is_private_gfn(kvm, gfn) != is_private) {
-			matches = false;
+	while (gfn < end_gfn) {
+		struct kvm_memory_slot *slot = gfn_to_memslot(kvm, gfn);
+		gfn_t slot_end;
+
+		if (!slot || !kvm_slot_has_gmem(slot)) {
+			match = false;
 			break;
 		}
+
+		slot_end = min(end_gfn, slot->base_gfn + slot->npages);
+		if (!kvm_gmem_range_has_attributes(slot, gfn, slot_end,
+						  attributes)) {
+			match = false;
+			break;
+		}
+		gfn = slot_end;
 	}
 	srcu_read_unlock(&kvm->srcu, idx);
 
-	return matches;
+	return match;
 }
-
 static int realm_get_ripas(struct kvm *kvm, unsigned long addr,
 			   enum rmi_ripas *ripas)
 {
@@ -1305,53 +1347,83 @@ static int kvm_complete_ripas_change(struct kvm_vcpu *vcpu)
 	struct realm_rec *rec = &vcpu->arch.rec;
 	unsigned long base = rec->run->exit.ripas_base;
 	unsigned long top = rec->run->exit.ripas_top;
-	unsigned long ripas = rec->run->exit.ripas_value;
+	enum rmi_ripas target_ripas = rec->run->exit.ripas_value;
+	enum rmi_ripas src_ripas = RMI_EMPTY;
 	unsigned long top_ipa = base;
-	unsigned long mmu_seq;
-	bool state_matches;
+	unsigned long mmu_seq = 0;
+	bool attributes_match;
+	bool dev_ripas_change;
 	int ret;
 
 	do {
-		kvm_mmu_topup_memory_cache(&vcpu->arch.mmu_page_cache,
-					   kvm_mmu_cache_min_pages(vcpu->arch.hw_mmu));
+		attributes_match = realm_ripas_attributes_match(vcpu, base, top,
+								target_ripas, &mmu_seq);
 
-		mmu_seq = kvm->mmu_invalidate_seq;
-		/* Pairs with the smp_wmb() in kvm_mmu_invalidate_end(). */
-		smp_rmb();
-		state_matches = ripas_range_matches_gmem(kvm, base, top, ripas);
-
+		ret = kvm_mmu_topup_memory_cache(&vcpu->arch.mmu_page_cache,
+						 kvm_mmu_cache_min_pages(vcpu->arch.hw_mmu));
+		if (ret)
+			return ret;
 		write_lock(&kvm->mmu_lock);
-		if (mmu_invalidate_retry(kvm, mmu_seq)) {
-			write_unlock(&kvm->mmu_lock);
-			cond_resched();
-			continue;
+		/*
+		 * Device mappings are not backed by guest_memfd. Detect the
+		 * source RIPAS while holding mmu_lock so DEV -> EMPTY can unmap
+		 * the device mapping without requiring memory attributes.
+		 */
+		if (target_ripas == RMI_EMPTY) {
+			ret = realm_get_ripas(kvm, base, &src_ripas);
+			if (ret) {
+				write_unlock(&kvm->mmu_lock);
+				goto out_handle_error;
+			}
 		}
 
-		if (!state_matches) {
-			write_unlock(&kvm->mmu_lock);
-			kvm_prepare_memory_fault_exit(vcpu, base, top - base,
-						      false, false,
-						      ripas == RMI_RAM);
-			kvm_make_request(KVM_REQ_RMI, vcpu);
-			rec->run->exit.ripas_base = base;
-			return -EFAULT;
-		}
+		if (target_ripas == RMI_DEV || src_ripas == RMI_DEV)
+			dev_ripas_change = true;
+		else
+			dev_ripas_change = false;
 
-		ret = realm_set_ipa_state(vcpu, base, top, ripas, &top_ipa);
+		/* Device RIPAS transitions have no guest_memfd backing. */
+		if (!dev_ripas_change) {
+			if (!attributes_match) {
+				write_unlock(&kvm->mmu_lock);
+				kvm_prepare_memory_fault_exit(vcpu, base,
+						      top - base, false, false,
+						      target_ripas == RMI_RAM);
+				kvm_make_request(KVM_REQ_RMI, vcpu);
+				rec->run->exit.ripas_base = base;
+				return -EFAULT;
+			}
+			if (mmu_invalidate_retry(kvm, mmu_seq)) {
+				write_unlock(&kvm->mmu_lock);
+				cond_resched();
+				continue;
+			}
+		}
+		ret = realm_set_ipa_state(vcpu, base, top, src_ripas,
+					  target_ripas,
+					  &top_ipa);
 		write_unlock(&kvm->mmu_lock);
 
+out_handle_error:
 		if (ret == -ENOMEM) {
-			/* If no progress, then stop */
-			if (top_ipa == base)
-				break;
+			if (top_ipa == base) {
+				rec->run->exit.ripas_base = base;
+				return ret;
+			}
 			base = top_ipa;
 			continue;
 		}
 
-		if (WARN_RATELIMIT(ret,
-				   "Unable to satisfy RIPAS_CHANGE for %#lx - %#lx, ripas: %#lx\n",
-				   base, top, ripas))
-			break;
+		if (ret) {
+			WARN_RATELIMIT(1,
+				       "Unable to satisfy RIPAS_CHANGE for %#lx - %#lx, ripas: %#x\n",
+				       base, top, target_ripas);
+			/* Reject a request that KVM cannot complete. */
+			base = top_ipa;
+			rec->run->enter.flags |= REC_ENTER_FLAG_RIPAS_RESPONSE;
+			rec->run->exit.ripas_base = base;
+			return 1;
+		}
 
 		base = top_ipa;
 	} while (base < top);
@@ -1363,8 +1435,8 @@ static int kvm_complete_ripas_change(struct kvm_vcpu *vcpu)
 	 * ignores the contains of the rec_exit structure so this doesn't
 	 * affect the RMM.
 	 */
+	WARN_ON_ONCE(base != top);
 	rec->run->exit.ripas_base = base;
-
 	return 1;
 }
 
