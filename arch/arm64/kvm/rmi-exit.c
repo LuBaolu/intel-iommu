@@ -80,7 +80,9 @@ static int rec_exit_ripas_change(struct kvm_vcpu *vcpu)
 	}
 
 	/* Exit to VMM, the actual RIPAS change is done on next entry */
-	kvm_prepare_memory_fault_exit(vcpu, base, top - base, false, false,
+	kvm_prepare_memory_fault_exit(vcpu, ALIGN_DOWN(base, PAGE_SIZE),
+				      ALIGN(top - base, PAGE_SIZE),
+				      false, false,
 				      ripas == RMI_RAM);
 	kvm_make_request(KVM_REQ_RMI, vcpu);
 
