@@ -103,6 +103,14 @@ u64 kvm_realm_reset_id_aa64dfr0_el1(const struct kvm_vcpu *vcpu, u64 val);
 bool kvm_rmi_supports_sve(void);
 
 int kvm_init_realm(struct kvm *kvm);
+#ifdef CONFIG_KVM
+int kvm_realm_ensure_created(struct kvm *kvm);
+#else
+static inline int kvm_realm_ensure_created(struct kvm *kvm)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 int kvm_activate_realm(struct kvm *kvm);
 void kvm_destroy_realm(struct kvm *kvm);
 int kvm_realm_teardown_stage2(struct kvm *kvm);
