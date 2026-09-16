@@ -673,4 +673,24 @@ enum rmi_vdev_state {
 	RMI_VDEV_KEY_PURGE,
 };
 
+#define MAX_VDEV_ADDR_RANGE 8
+struct rmi_vdev_params {
+	union {
+		struct {
+			u64 flags;
+			u64 vdev_id;
+			u64 tdi_id;
+			u64 padding0;
+			u64 vsmmu_addr;
+			u64 vsid;
+			u64 num_addr_range;
+		};
+		u8 padding1[0x200];
+	};
+	union { /* 0x200 */
+		struct rmi_addr_range addr_range[MAX_VDEV_ADDR_RANGE];
+		u8 padding2[0x1000 - 0x200];
+	};
+};
+
 #endif /* __LINUX_ARM_SMCCC_RMI_H_ */
