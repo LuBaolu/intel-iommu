@@ -1284,3 +1284,99 @@ int cca_vdev_device_lock(struct cca_host_tdi *host_tdi,
 	return submit_vdev_state_transition_work(host_tdi, pdev,
 						 RMI_VDEV_LOCKED);
 }
+
+int cca_vdev_get_object_size(struct cca_host_tdi *host_tdi,
+			     struct pci_dev *pdev, int type)
+{
+	long len;
+	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
+	struct pci_tsm *tsm = pdev->tsm;
+	struct cca_host_pdev_dsc *pdev_dsc;
+
+	cca_vdev_assert_locked(pdev);
+
+	if (!tsm)
+		return -EINVAL;
+
+	pdev_dsc = to_cca_pdev_dsc(tsm->dsm_dev);
+	pf0_ep_dsc = to_cca_pf0_ep_dsc(tsm->dsm_dev);
+
+	guard(mutex)(&pdev_dsc->object_lock);
+	/* Determine the buffer that should be used */
+	if (type == RHI_DA_OBJECT_INTERFACE_REPORT) {
+		if (!host_tdi->interface_report)
+			return -EINVAL;
+		len = host_tdi->interface_report->offset;
+	} else if (type == RHI_DA_OBJECT_MEASUREMENT) {
+		if (!host_tdi->measurements)
+			return -EINVAL;
+		len = host_tdi->measurements->offset;
+	} else if (type == RHI_DA_OBJECT_CERTIFICATE) {
+		if (!pf0_ep_dsc->cert_chain.cache)
+			return -EINVAL;
+		len = pf0_ep_dsc->cert_chain.cache->offset;
+	} else if (type == RHI_DA_OBJECT_VCA) {
+		if (!pf0_ep_dsc->vca)
+			return -EINVAL;
+		len = pf0_ep_dsc->vca->offset;
+	} else {
+		return -EINVAL;
+	}
+
+	return len;
+}
+
+int cca_vdev_read_cached_object(struct cca_host_tdi *host_tdi,
+				struct pci_dev *pdev, int type,
+				unsigned long offset, unsigned long max_len,
+				void __user *user_buf)
+{
+	void *buf;
+	unsigned long len;
+	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
+	struct pci_tsm *tsm = pdev->tsm;
+	struct cca_host_pdev_dsc *pdev_dsc;
+
+	cca_vdev_assert_locked(pdev);
+
+	if (!tsm)
+		return -EINVAL;
+
+	pdev_dsc = to_cca_pdev_dsc(tsm->dsm_dev);
+	pf0_ep_dsc = to_cca_pf0_ep_dsc(tsm->dsm_dev);
+
+	guard(mutex)(&pdev_dsc->object_lock);
+	/* Determine the buffer that should be used */
+	if (type == RHI_DA_OBJECT_INTERFACE_REPORT) {
+		if (!host_tdi->interface_report)
+			return -EINVAL;
+		len = host_tdi->interface_report->offset;
+		buf = host_tdi->interface_report->buf;
+	} else if (type == RHI_DA_OBJECT_MEASUREMENT) {
+		if (!host_tdi->measurements)
+			return -EINVAL;
+		len = host_tdi->measurements->offset;
+		buf = host_tdi->measurements->buf;
+	} else if (type == RHI_DA_OBJECT_CERTIFICATE) {
+		if (!pf0_ep_dsc->cert_chain.cache)
+			return -EINVAL;
+		len = pf0_ep_dsc->cert_chain.cache->offset;
+		buf = pf0_ep_dsc->cert_chain.cache->buf;
+	} else if (type == RHI_DA_OBJECT_VCA) {
+		if (!pf0_ep_dsc->vca)
+			return -EINVAL;
+		len = pf0_ep_dsc->vca->offset;
+		buf = pf0_ep_dsc->vca->buf;
+	} else {
+		return -EINVAL;
+	}
+
+	/* Assume that the buffer is large enough for the whole report */
+	if (max_len < len)
+		return -E2BIG;
+
+	if (copy_to_user(user_buf, buf + offset, len))
+		return -EIO;
+
+	return len;
+}
