@@ -5,6 +5,7 @@
 
 #include <linux/arm-smccc.h>
 #include <linux/arm-smccc-bus.h>
+#include <linux/iommufd.h>
 #include <linux/pci-tsm.h>
 #include <linux/pci-ide.h>
 #include <linux/module.h>
@@ -425,6 +426,8 @@ static struct pci_tsm_ops cca_link_pci_ops = {
 	.remove = cca_tsm_pci_remove,
 	.connect = cca_tsm_connect,
 	.disconnect = cca_tsm_disconnect,
+	.owner = THIS_MODULE,
+	.viommu_get_ops = cca_viommu_get_ops,
 };
 
 static void cca_link_tsm_remove(void *tsm_dev)
@@ -440,6 +443,7 @@ static bool rmi_has_reg2_feature(unsigned long feature)
 static int cca_link_tsm_probe(struct arm_smccc_device *sdev)
 {
 	struct tsm_dev *tsm_dev;
+	int ret;
 
 	if (!rmi_has_reg2_feature(RMI_FEATURE_REGISTER_2_DA))
 		return -ENODEV;
@@ -448,8 +452,10 @@ static int cca_link_tsm_probe(struct arm_smccc_device *sdev)
 	if (IS_ERR(tsm_dev))
 		return PTR_ERR(tsm_dev);
 
-	return devm_add_action_or_reset(&sdev->dev, cca_link_tsm_remove,
-					tsm_dev);
+	ret = devm_add_action_or_reset(&sdev->dev, cca_link_tsm_remove, tsm_dev);
+	if (ret)
+		return ret;
+	return 0;
 }
 
 static const struct arm_smccc_device_id cca_link_tsm_id_table[] = {
@@ -462,6 +468,7 @@ static struct arm_smccc_driver cca_link_tsm_driver = {
 	.name = KBUILD_MODNAME,
 	.probe = cca_link_tsm_probe,
 	.id_table = cca_link_tsm_id_table,
+	.driver.suppress_bind_attrs = true,
 };
 module_arm_smccc_driver(cca_link_tsm_driver);
 MODULE_IMPORT_NS("PCI_IDE");
