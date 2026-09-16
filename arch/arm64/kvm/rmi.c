@@ -1120,6 +1120,19 @@ static int set_ripas_of_protected_regions(struct kvm *kvm)
 
 	return ret;
 }
+int kvm_realm_ensure_created(struct kvm *kvm)
+{
+	int ret;
+
+	if (!kvm_vm_is_realm(kvm))
+		return -EINVAL;
+
+	guard(mutex)(&kvm->arch.config_lock);
+	ret = realm_ensure_created(kvm);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(kvm_realm_ensure_created);
 
 int kvm_arm_rmi_populate(struct kvm *kvm,
 			 struct kvm_arm_rmi_populate *args)
