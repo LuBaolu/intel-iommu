@@ -2,4 +2,4 @@
 #
 obj-$(CONFIG_ARM_CCA_HOST) += arm-cca-host.o
 
-arm-cca-host-y	+=  main.o rmi-da.o
+arm-cca-host-y	+= main.o rmi-da.o viommu.o
