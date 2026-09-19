@@ -32,6 +32,7 @@
 #include <linux/set_memory.h>
 #include <linux/slab.h>
 #include <linux/syscore_ops.h>
+#include <linux/topology.h>
 
 #include <linux/irqchip.h>
 #include <linux/irqchip/arm-gic-v3.h>
@@ -215,6 +216,9 @@ static struct page *its_alloc_pages_node(int node, gfp_t gfp,
 {
 	struct page *page;
 	int ret = 0;
+
+	if (node == NUMA_NO_NODE)
+		node = numa_mem_id();
 
 	page = alloc_pages_node(node, gfp | gfp_flags_quirk, order);
 
