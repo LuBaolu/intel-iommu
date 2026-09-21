@@ -299,6 +299,48 @@ unsigned long swiotlb_default_pool_size(void)
 	return default_nslabs << IO_TLB_SHIFT;
 }
 
+/**
+ * swiotlb_preferred_pool_size() - get the preferred SWIOTLB pool size
+ *
+ * Return the size that confidential-computing guest sizing would select for
+ * the default pool, without changing the configured SWIOTLB size. An
+ * explicit swiotlb= size is always preserved. An explicit area count is
+ * included in the size calculation. Automatic area sizing is initialized
+ * later from the running kernel's possible CPU map and any resulting minimum
+ * size adjustment is therefore not reflected in the returned size.
+ */
+unsigned long __init swiotlb_preferred_pool_size(void)
+{
+	unsigned long nslabs;
+	u64 size = swiotlb_default_pool_size();
+
+	if (!swiotlb_cmdline_size_set &&
+	    cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT)) {
+		/*
+		 * For SEV and TDX and CCA, all DMA has to occur via
+		 * shared/unencrypted pages. Kernel uses SWIOTLB to make this
+		 * happen without changing device drivers. However, depending on
+		 * the workload being run, the default 64MB of SWIOTLB may not be
+		 * enough and SWIOTLB may run out of buffers for DMA, resulting in
+		 * I/O errors and/or performance degradation especially with high
+		 * I/O workloads.
+		 *
+		 * Adjust the default size of SWIOTLB using a percentage of guest
+		 * memory for SWIOTLB buffers.
+		 *
+		 * The percentage of guest memory used here for SWIOTLB buffers is
+		 * more of an approximation of the static adjustment which 64MB for
+		 * <1G, and ~128M to 256M for 1G-to-4G, i.e., the 6%
+		 */
+		size = div_u64((u64)memblock_phys_mem_size() * 6, 100);
+		size = clamp_val(size, IO_TLB_DEFAULT_SIZE, SZ_1G);
+	}
+
+	nslabs = swiotlb_calc_nslabs(size, default_nareas);
+
+	return nslabs << IO_TLB_SHIFT;
+}
+
 void __init swiotlb_adjust_size(unsigned long size)
 {
 	/*
@@ -475,24 +517,7 @@ swiotlb_adjust_pool_size(enum swiotlb_pool_policy policy)
 		size = min(swiotlb_default_pool_size(), size);
 		break;
 	case SWIOTLB_POOL_CC_GUEST:
-		/*
-		 * For SEV and TDX and CCA, all DMA has to occur via
-		 * shared/unencrypted pages. Kernel uses SWIOTLB to make this
-		 * happen without changing device drivers. However, depending on
-		 * the workload being run, the default 64MB of SWIOTLB may not be
-		 * enough and SWIOTLB may run out of buffers for DMA, resulting in
-		 * I/O errors and/or performance degradation especially with high
-		 * I/O workloads.
-		 *
-		 * Adjust the default size of SWIOTLB using a percentage of guest
-		 * memory for SWIOTLB buffers.
-		 *
-		 * The percentage of guest memory used here for SWIOTLB buffers is
-		 * more of an approximation of the static adjustment which 64MB for
-		 * <1G, and ~128M to 256M for 1G-to-4G, i.e., the 6%
-		 */
-		size = div_u64((u64)memblock_phys_mem_size() * 6, 100);
-		size = clamp_val(size, IO_TLB_DEFAULT_SIZE, SZ_1G);
+		size = swiotlb_preferred_pool_size();
 		break;
 	case SWIOTLB_POOL_NONE:
 		WARN(true, "Cannot adjust SWIOTLB size without a pool\n");
