@@ -14,6 +14,8 @@
 #include <asm/seamldr.h>
 #include <asm/tdx.h>
 
+#include "private.h"
+
 static const struct x86_cpu_id tdx_host_ids[] = {
 	X86_MATCH_FEATURE(X86_FEATURE_TDX_HOST_PLATFORM, NULL),
 	{}
@@ -202,9 +204,26 @@ static int seamldr_init(struct device *dev)
 	return devm_add_action_or_reset(dev, seamldr_deinit, tdx_fwl);
 }
 
+static int tdx_connect_init(struct device *dev)
+{
+	const struct tdx_sys_info *tdx_sysinfo = tdx_get_sysinfo();
+
+	if (!IS_ENABLED(CONFIG_TDX_CONNECT) || !tdx_sysinfo ||
+	    !(tdx_sysinfo->features.tdx_features0 & TDX_FEATURES0_TDXCONNECT))
+		return 0;
+
+	return tdx_iommu_enable_all();
+}
+
 static int tdx_host_probe(struct faux_device *fdev)
 {
-	return seamldr_init(&fdev->dev);
+	int ret;
+
+	ret = seamldr_init(&fdev->dev);
+	if (ret)
+		return ret;
+
+	return tdx_connect_init(&fdev->dev);
 }
 
 static const struct faux_device_ops tdx_host_ops = {
