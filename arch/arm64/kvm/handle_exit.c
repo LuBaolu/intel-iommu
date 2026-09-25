@@ -18,6 +18,7 @@
 #include <asm/kvm_emulate.h>
 #include <asm/kvm_mmu.h>
 #include <asm/kvm_nested.h>
+#include <asm/kvm_rmi.h>
 #include <asm/debug-monitors.h>
 #include <asm/stacktrace/nvhe.h>
 #include <asm/traps.h>
@@ -447,6 +448,9 @@ int handle_exit(struct kvm_vcpu *vcpu, int exception_index)
 {
 	struct kvm_run *run = vcpu->run;
 
+	if (exception_index < 0)
+		return exception_index;
+
 	if (ARM_SERROR_PENDING(exception_index)) {
 		/*
 		 * The SError is handled by handle_exit_early(). If the guest
@@ -478,6 +482,8 @@ int handle_exit(struct kvm_vcpu *vcpu, int exception_index)
 		 */
 		run->exit_reason = KVM_EXIT_FAIL_ENTRY;
 		return -EINVAL;
+	case ARM_EXCEPTION_EXIT:
+		return 0;
 	default:
 		kvm_pr_unimpl("Unsupported exception type: %d",
 			      exception_index);
@@ -490,7 +496,7 @@ static void handle_exit_pkvm_state(struct kvm_vcpu *vcpu, int exception_index)
 {
 	int exception_code = ARM_EXCEPTION_CODE(exception_index);
 
-	if (!is_protected_kvm_enabled() || kvm_vm_is_protected(vcpu->kvm))
+	if (!kvm_vm_is_unprotected_pkvm(vcpu->kvm))
 		return;
 
 	/*
@@ -510,6 +516,9 @@ static void handle_exit_pkvm_state(struct kvm_vcpu *vcpu, int exception_index)
 /* For exit types that need handling before we can be preempted */
 void handle_exit_early(struct kvm_vcpu *vcpu, int exception_index)
 {
+	if (exception_index < 0 || exception_index == ARM_EXCEPTION_EXIT)
+		return;
+
 	handle_exit_pkvm_state(vcpu, exception_index);
 
 	if (ARM_SERROR_PENDING(exception_index)) {
