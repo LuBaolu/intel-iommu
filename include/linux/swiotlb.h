@@ -15,7 +15,12 @@ struct page;
 struct scatterlist;
 
 #define SWIOTLB_VERBOSE	(1 << 0) /* verbose initialization */
-#define SWIOTLB_ANY	(1 << 1) /* allow any memory for the buffer */
+/* Initialize a default-sized pool for devices with limited DMA addressing. */
+#define SWIOTLB_INIT_ADDRESSING_LIMIT	(1 << 1)
+/* Initialize a default-sized pool that requires architecture remapping. */
+#define SWIOTLB_INIT_REMAP		(1 << 2)
+/* Do not initialize a pool unless SWIOTLB is explicitly required. */
+#define SWIOTLB_INIT_DEFAULT_OFF	(1 << 3)
 
 /*
  * Maximum allowable number of contiguous slabs to map,
@@ -38,9 +43,9 @@ struct scatterlist;
 #define IO_TLB_DEFAULT_SIZE (64UL << 20)
 #endif
 
-unsigned long swiotlb_size_or_default(void);
-void __init swiotlb_init_remap(bool addressing_limit, unsigned int flags,
-	int (*remap)(void *tlb, unsigned long nslabs));
+unsigned long swiotlb_default_pool_size(void);
+void __init swiotlb_init_remap(unsigned int flags,
+			       int (*remap)(void *tlb, unsigned long nslabs));
 int swiotlb_init_late(size_t size, gfp_t gfp_mask,
 	int (*remap)(void *tlb, unsigned long nslabs));
 extern void __init swiotlb_update_mem_attributes(void);
@@ -183,17 +188,18 @@ static inline bool is_swiotlb_force_bounce(struct device *dev)
 	return mem && mem->force_bounce;
 }
 
-void swiotlb_init(bool addressing_limited, unsigned int flags);
+void swiotlb_init(unsigned int flags);
 void __init swiotlb_exit(void);
 void swiotlb_dev_init(struct device *dev);
 size_t swiotlb_max_mapping_size(struct device *dev);
 bool is_swiotlb_allocated(void);
 bool is_swiotlb_active(struct device *dev);
+unsigned long __init swiotlb_preferred_pool_size(void);
 void __init swiotlb_adjust_size(unsigned long size);
 phys_addr_t default_swiotlb_base(void);
 phys_addr_t default_swiotlb_limit(void);
 #else
-static inline void swiotlb_init(bool addressing_limited, unsigned int flags)
+static inline void swiotlb_init(unsigned int flags)
 {
 }
 
@@ -226,6 +232,11 @@ static inline bool is_swiotlb_allocated(void)
 static inline bool is_swiotlb_active(struct device *dev)
 {
 	return false;
+}
+
+static inline unsigned long __init swiotlb_preferred_pool_size(void)
+{
+	return 0;
 }
 
 static inline void swiotlb_adjust_size(unsigned long size)
