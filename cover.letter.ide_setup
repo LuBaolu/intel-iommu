@@ -1,0 +1,87 @@
+coco/TSM: Host-side Arm CCA IDE setup via connect/disconnect callbacks
+
+This patch series implements the TSM ->connect() and ->disconnect() callbacks
+required for the Arm CCA IDE setup as per the RMM 2.0bet3 specification [1].
+
+This patchset includes the host-side flow needed by connect/disconnect,
+including:
+- DA feature detection helpers
+- host TSM callback wiring and IDE stream allocation support
+- creation/registration of RMM pdev descriptors
+- RMM pdev communication helpers
+- pdev stop and teardown helpers for disconnect
+- pdev instantiation from the connect path
+- public key registration with RMM
+
+To support public-key handling from the device certificate chain, the series
+also includes the required X.509 parser updates.
+
+Testing / Usage
+
+To initiate the IDE setup:
+	echo tsm0 > /sys/bus/pci/devices/$DEVICE/tsm/connect
+
+To disconnect:
+	echo tsm0 > /sys/bus/pci/devices/$DEVICE/tsm/disconnect
+
+The series is based on:
+  - https://lore.kernel.org/all/20260904095000.1184861-1-aneesh.kumar@kernel.org
+  - https://lore.kernel.org/all/20260907095942.1140734-1-suzuki.poulose@arm.com
+
+Changes from v4:
+https://lore.kernel.org/all/20260427065121.916615-1-aneesh.kumar@kernel.org
+* Update rmi_set_pub_key() based on the latest specification.
+* Rename structure members to match the specification.
+* Rebase on top of the latest dependent series.
+
+Changes from v3:
+https://lore.kernel.org/all/20260312080129.3483585-1-aneesh.kumar@kernel.org
+* updated the patches to follow the RMM 2.0bet1 specification
+* reworked the host-side pdev lifecycle to better match the RMM 2.0bet1 flow,
+  including common pdev state, root-port pdev support, and non-coherent stream
+  setup and teardown
+* split PF0 setup into identity collection and conditional public-key
+  installation, and gate DA enablement on RMI_FEATURE_REGISTER_2_DA
+* added coordinated handling for RMI_DEV_COMM_EXIT_STREAM_WAIT, along with
+  stream connect/disconnect and stream key refresh/purge support during vdev
+  teardown
+
+Changes from v2:
+rfc-v2 https://lore.kernel.org/all/20251027095602.1154418-1-aneesh.kumar@kernel.org
+* rebase to latest kernel and core TSM changes
+* Address review feedback.
+
+v1:
+rfc-v1 https://lore.kernel.org/all/20250728135216.48084-1-aneesh.kumar@kernel.org
+
+[1] https://developer.arm.com/documentation/den0137/2-0bet3/
+[2] https://lore.kernel.org/all/20260303000207.1836586-1-dan.j.williams@intel.com
+[3] https://lore.kernel.org/all/20260318155413.793430-1-steven.price@arm.com
+[4] https://gitlab.arm.com/linux-arm/linux-cca.git cca/topics/cca-tdisp-upstream-rfc-v4
+
+Cc: Alexey Kardashevskiy <aik@amd.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jonathan Cameron <jic23@kernel.org>
+Cc: Marc Zyngier <maz@kernel.org>
+Cc: Samuel Ortiz <sameo@rivosinc.com>
+Cc: Steven Price <steven.price@arm.com>
+Cc: Suzuki K Poulose <Suzuki.Poulose@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Ashish Kalra <ashish.kalra@amd.com>
+Cc: Tom Lendacky <thomas.lendacky@amd.com>
+Cc: John Allen <john.allen@amd.com>
+Cc: Herbert Xu <herbert@gondor.apana.org.au>
+Cc: "David S. Miller" <davem@davemloft.net>
+Cc: Dan Williams <djbw@kernel.org>
+Cc: Bjorn Helgaas <bhelgaas@google.com>
+Cc: David Howells <dhowells@redhat.com>
+Cc: Lukas Wunner <lukas@wunner.de>
+Cc: Ignat Korchagin <ignat@linux.win>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: "Gustavo A. R. Silva" <gustavoars@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Lorenzo Pieralisi <lpieralisi@kernel.org>
+Cc: Sudeep Holla <sudeep.holla@kernel.org>
+Cc: Xu Yilun <yilun.xu@linux.intel.com>
