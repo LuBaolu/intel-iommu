@@ -393,7 +393,7 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 		val[0] = RHI_HOSTCONF_VER_1_0;
 		break;
 	case RHI_HOSTCONF_FEATURES:
-		val[0] = __RHI_HOSTCONF_GET_IPA_CHANGE_ALIGNMENT;
+		val[0] = RHI_HOSTCONF_FEATURE_GET_IPA_CHANGE_ALIGNMENT;
 		break;
 	case RHI_HOSTCONF_GET_IPA_CHANGE_ALIGNMENT:
 		val[0] = PAGE_SIZE;

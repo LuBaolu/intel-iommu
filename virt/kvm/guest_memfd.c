@@ -146,54 +146,6 @@ bool kvm_gmem_range_has_attributes(struct kvm_memory_slot *slot, gfn_t start,
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_gmem_range_has_attributes);
 
-static int __kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
-				    pgoff_t index, struct folio *folio)
-{
-#ifdef CONFIG_HAVE_KVM_ARCH_GMEM_PREPARE
-	kvm_pfn_t pfn = folio_file_pfn(folio, index);
-	gfn_t gfn = slot->base_gfn + index - slot->gmem.pgoff;
-	int rc = kvm_arch_gmem_prepare(kvm, gfn, pfn, folio_order(folio));
-	if (rc) {
-		pr_warn_ratelimited("gmem: Failed to prepare folio for index %lx GFN %llx PFN %llx error %d.\n",
-				    index, gfn, pfn, rc);
-		return rc;
-	}
-#endif
-
-	return 0;
-}
-
-/*
- * Process @folio, which contains @gfn, so that the guest can use it.
- * The folio must be locked and the gfn must be contained in @slot.
- * On successful return the guest sees a zero page so as to avoid
- * leaking host data and the up-to-date flag is set.
- */
-static int kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
-				  gfn_t gfn, struct folio *folio)
-{
-	pgoff_t index;
-
-	/*
-	 * Preparing huge folios should always be safe, since it should
-	 * be possible to split them later if needed.
-	 *
-	 * Right now the folio order is always going to be zero, but the
-	 * code is ready for huge folios.  The only assumption is that
-	 * the base pgoff of memslots is naturally aligned with the
-	 * requested page order, ensuring that huge folios can also use
-	 * huge page table entries for GPA->HPA mapping.
-	 *
-	 * The order will be passed when creating the guest_memfd, and
-	 * checked when creating memslots.
-	 */
-	WARN_ON(!IS_ALIGNED(slot->gmem.pgoff, folio_nr_pages(folio)));
-	index = kvm_gmem_get_index(slot, gfn);
-	index = ALIGN_DOWN(index, folio_nr_pages(folio));
-
-	return __kvm_gmem_prepare_folio(kvm, slot, index, folio);
-}
-
 /*
  * Returns a locked folio on success.  The caller is responsible for
  * setting the up-to-date flag before the memory is mapped into the guest.
@@ -1256,23 +1208,6 @@ out:
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_gmem_get_pfn);
 
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_POPULATE
-static bool kvm_gmem_range_is_private(struct file *file, pgoff_t index,
-				      size_t nr_pages, struct kvm *kvm, gfn_t gfn)
-{
-#ifdef CONFIG_KVM_VM_MEMORY_ATTRIBUTES
-	if (!gmem_in_place_conversion)
-		return kvm_range_has_vm_memory_attributes(kvm, gfn, gfn + nr_pages,
-							  KVM_MEMORY_ATTRIBUTE_PRIVATE,
-							  KVM_MEMORY_ATTRIBUTE_PRIVATE);
-#else
-	if (WARN_ON_ONCE(!gmem_in_place_conversion))
-		return false;
-#endif
-
-	return __kvm_gmem_range_has_attributes(file_inode(file), index, nr_pages,
-					     KVM_MEMORY_ATTRIBUTE_PRIVATE);
-}
-
 static long __kvm_gmem_populate(struct kvm *kvm, struct kvm_memory_slot *slot,
 				struct file *file, gfn_t gfn, struct page *src_page,
 				kvm_gmem_populate_cb post_populate, void *opaque)
