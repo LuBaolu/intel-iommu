@@ -2949,8 +2949,7 @@ static bool kvm_prevents_memslot_change(struct kvm *kvm, enum kvm_mr_change chan
 	if (change != KVM_MR_DELETE && change != KVM_MR_MOVE)
 		return false;
 
-	if ((kvm_vm_is_protected_pkvm(kvm) && pkvm_hyp_vm_is_created(kvm)) ||
-	     kvm_realm_is_created(kvm))
+	if ((kvm_vm_is_protected_pkvm(kvm) && pkvm_hyp_vm_is_created(kvm)))
 		return true;
 	return false;
 }
