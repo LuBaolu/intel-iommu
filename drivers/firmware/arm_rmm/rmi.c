@@ -16,10 +16,6 @@
 static unsigned long rmi_feat_reg_cache[5] __ro_after_init;
 static bool arm64_rmi_is_available;
 
-/* Currently only the first 3 registers are used by Linux */
-#define RMI_FEAT_REG_COUNT	3
-static unsigned long rmi_feat_reg_cache[RMI_FEAT_REG_COUNT] __ro_after_init;
-
 /**
  * rmi_granule_range_undelegate() - Undelegate a range of granules
  * @base: Base PA of the target range

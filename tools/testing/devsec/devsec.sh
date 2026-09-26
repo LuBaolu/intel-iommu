@@ -97,11 +97,8 @@ validate_disconnected() {
 	# validate that the dsm is not yet detected and that the sub-function
 	# is aware of any TSM capabilities
 	dsm=$(cat $pci_dev/tsm/dsm) || err "$LINENO from $2"
-	bound=$(cat $pci_dev/tsm/bound) || err "$LINENO from $2"
 	[[ -z $dsm ]] || err "$LINENO from $2"
-	[[ -z $bound ]] || err "$LINENO from $2"
 	[[ ! -e $fn_dev/tsm/dsm ]] || err "$LINENO from $2"
-	[[ ! -e $fn_dev/tsm/bound ]] || err "$LINENO from $2"
 	[[ ! -e $fn_dev/tsm/connect ]] || err "$LINENO from $2"
 	[[ ! -e $fn_dev/tsm/disconnect ]] || err "$LINENO from $2"
 }
@@ -196,27 +193,6 @@ ide_test() {
 	[[ $dsm == $(basename $pci_dev) ]] || err "$LINENO"
 
 	check_evidence $pci_dev
-
-	# bind both functions and validate that they display bound to
-	# the TSM device
-	echo $(basename $pci_dev) > $tsm_link/device/tsm_bind
-	bound=$(cat $pci_dev/tsm/bound)
-	[[ $bound == $(basename $tsm_link) ]] || err "$LINENO"
-	echo $(basename $fn_dev) > $tsm_link/device/tsm_bind
-	bound=$(cat $fn_dev/tsm/bound)
-	[[ $bound == $(basename $tsm_link) ]] || err "$LINENO"
-
-	# test manual unbind
-	echo $(basename $pci_dev) > $tsm_link/device/tsm_unbind
-	bound=$(cat $pci_dev/tsm/bound)
-	[[ -z $bound ]] || err "$LINENO"
-	echo $(basename $fn_dev) > $tsm_link/device/tsm_unbind
-	bound=$(cat $fn_dev/tsm/bound)
-	[[ -z $bound ]] || err "$LINENO"
-
-	# rebind to test automatic unbind at disconnect
-	echo $(basename $pci_dev) > $tsm_link/device/tsm_bind
-	echo $(basename $fn_dev) > $tsm_link/device/tsm_bind
 
 	# check that the links disappear at disconnect and the stream
 	# pool is refilled

@@ -1965,7 +1965,7 @@ static void noinstr rec_enter_sync(struct kvm_vcpu *vcpu)
 	} else if (vcpu_get_flag(vcpu, INCREMENT_PC)) {
 		if (run->exit.exit_reason == RMI_EXIT_SYNC &&
 		    ESR_ELx_EC(run->exit.esr) == ESR_ELx_EC_DABT_LOW &&
-		    !kvm_vcpu_dabt_is_cm(vcpu)) {
+		    !esr_dabt_is_cm(run->exit.esr)) {
 			entry->flags |= REC_ENTER_FLAG_EMULATED_MMIO;
 			entry->gprs[0] = vcpu_get_reg(vcpu, 0);
 		}

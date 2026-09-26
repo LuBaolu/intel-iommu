@@ -2387,10 +2387,11 @@ static int user_mem_abort(const struct kvm_s2_fault_desc *s2fd,
 		bool is_private = private_ipa_fault(kvm, s2fd->fault_ipa);
 
 		if (is_private != kvm_gmem_is_private_gfn(kvm, gfn)) {
-			kvm_prepare_memory_fault_exit(s2fd->vcpu, gfn_to_gpa(gfn),
-						      PAGE_SIZE,
-						      kvm_is_write_fault(s2fd->vcpu),
-						      kvm_vcpu_trap_is_exec_fault(s2fd->vcpu),
+			if (!result)
+				kvm_prepare_memory_fault_exit(s2fd->vcpu,
+						      gfn_to_gpa(gfn), PAGE_SIZE,
+						      kvm_s2_fault_is_write(s2fd),
+						      kvm_s2_fault_is_exec(s2fd),
 						      is_private);
 			return -EFAULT;
 		}

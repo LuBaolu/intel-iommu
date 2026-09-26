@@ -61,5 +61,5 @@ Subsystem Interfaces
 .. kernel-doc:: include/linux/pci-tsm.h
    :internal:
 
-.. kernel-doc:: drivers/pci/tsm.c
+.. kernel-doc:: drivers/pci/tsm/core.c
    :export:
