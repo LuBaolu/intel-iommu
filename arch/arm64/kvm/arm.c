@@ -93,6 +93,7 @@ static const struct kvm_ioctl_cap_map vm_ioctl_caps[] = {
 	{ KVM_ARM_GET_REG_WRITABLE_MASKS, KVM_CAP_ARM_SUPPORTED_REG_MASK_RANGES },
 	{ KVM_ARM_PREFERRED_TARGET, KVM_CAP_ARM_BASIC },
 	{ KVM_ARM_RMI_POPULATE, KVM_CAP_ARM_RMI},
+	{ KVM_ARM_RMI_INIT_RIPAS, KVM_CAP_ARM_RMI},
 };
 
 static void kvm_init_vcpu_ops(struct kvm_vcpu *vcpu);

@@ -979,8 +979,10 @@ int realm_map_ipa(struct kvm *kvm, phys_addr_t ipa,
 {
 	struct realm *realm = &kvm->arch.realm;
 
+#if 0
 	if (kvm_realm_state(kvm) != REALM_STATE_ACTIVE)
 		return -EBUSY;
+#endif
 
 	ipa = ALIGN_DOWN(ipa, map_size);
 	if (!kvm_realm_is_private_address(realm, ipa)) {
