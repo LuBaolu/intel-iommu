@@ -3956,6 +3956,7 @@ F:	drivers/firmware/arm_rmm/
 F:	drivers/virt/coco/arm-cca-guest/
 F:	drivers/virt/coco/pkvm-guest/
 F:	include/linux/arm-rsi-cmds.h
+F:	include/linux/arm-smccc-rhi.h
 F:	include/linux/arm-smccc-rsi.h
 F:	tools/testing/selftests/arm64/
 X:	arch/arm64/boot/dts/
@@ -27813,10 +27814,14 @@ S:	Maintained
 F:	Documentation/ABI/testing/configfs-tsm-report
 F:	Documentation/driver-api/coco/
 F:	Documentation/driver-api/pci/tsm.rst
-F:	drivers/pci/tsm.c
+F:	Documentation/netlink/specs/pci-tsm.yaml
+F:	drivers/pci/tsm/
 F:	drivers/virt/coco/guest/
 F:	include/linux/*tsm*.h
+F:	include/uapi/linux/pci-tsm-netlink.h
+F:	samples/devsec/
 F:	samples/tsm-mr/
+F:	tools/testing/devsec/
 
 TRUSTED SERVICES TEE DRIVER
 M:	Balint Dobszay <balint.dobszay@arm.com>

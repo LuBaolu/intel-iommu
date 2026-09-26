@@ -5,6 +5,7 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/interval_tree.h>
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
 
@@ -52,6 +53,7 @@ int kvm_init_nested(struct kvm *kvm)
 					      GFP_KERNEL_ACCOUNT);
 	kvm->arch.nested_mmus_size = 0;
 	atomic_set(&kvm->arch.vncr_tlb_count, 0);
+	spin_lock_init(&kvm->arch.guest_s2_tracking_lock);
 
 	return kvm->arch.nested_mmus ? 0 : -ENOMEM;
 }
@@ -657,7 +659,7 @@ again:
 		return 0;
 
 	tmp &= ~(sz - 1);
-	if (kvm_pgtable_get_leaf(mmu->pgt, tmp, &pte, NULL))
+	if (kvm_pgtable_get_leaf(mmu->pgt, tmp, &pte, NULL, 0))
 		goto again;
 	if (!(pte & PTE_VALID))
 		goto again;
@@ -869,6 +871,30 @@ out:
 		kvm_make_request(KVM_REQ_NESTED_S2_UNMAP, vcpu);
 
 	return s2_mmu;
+}
+
+void kvm_record_guest_s2_mapping(struct kvm_s2_mmu *mmu, gpa_t canonical_ipa,
+				 gpa_t nested_ipa, size_t map_size,
+				 struct kvm_guest_s2_mapping *mapping)
+{
+	struct kvm *kvm = kvm_s2_mmu_to_kvm(mmu);
+
+	lockdep_assert_held_read(&kvm->mmu_lock);
+
+	canonical_ipa = ALIGN_DOWN(canonical_ipa, map_size);
+	nested_ipa = ALIGN_DOWN(nested_ipa, map_size);
+
+	mapping->canonical.start = canonical_ipa;
+	mapping->canonical.last  = canonical_ipa + map_size - 1;
+
+	mapping->nested.start    = nested_ipa;
+	mapping->nested.last     = nested_ipa + map_size - 1;
+
+	mapping->nested_mmu      = mmu;
+
+	guard(spinlock)(&kvm->arch.guest_s2_tracking_lock);
+	interval_tree_insert(&mapping->nested, &mmu->guest_s2_mappings);
+	interval_tree_insert(&mapping->canonical, &kvm->arch.mmu.guest_s2_mappings);
 }
 
 void kvm_init_nested_s2_mmu(struct kvm_s2_mmu *mmu)
