@@ -39,6 +39,7 @@ menuconfig KVM
 	select KVM_GUEST_MEMFD
 	select ARM_RMM_RMI
 	select HAVE_KVM_ARCH_GMEM_POPULATE
+	select KVM_GENERIC_PRE_FAULT_MEMORY
 	help
 	  Support hosting virtualized guest machines.
 

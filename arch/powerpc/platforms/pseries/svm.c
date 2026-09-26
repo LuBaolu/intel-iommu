@@ -9,6 +9,7 @@
 #include <linux/mm.h>
 #include <linux/memblock.h>
 #include <linux/mem_encrypt.h>
+#include <linux/string.h>
 #include <linux/cc_platform.h>
 #include <asm/machdep.h>
 #include <asm/svm.h>
@@ -20,16 +21,6 @@ static int __init init_svm(void)
 {
 	if (!is_secure_guest())
 		return 0;
-
-	/* Don't release the SWIOTLB buffer. */
-	ppc_swiotlb_enable = 1;
-
-	/*
-	 * Since the guest memory is inaccessible to the host, devices always
-	 * need to use the SWIOTLB buffer for DMA even if dma_capable() says
-	 * otherwise.
-	 */
-	ppc_swiotlb_flags |= SWIOTLB_ANY;
 
 	/* Share the SWIOTLB buffer with the host. */
 	swiotlb_update_mem_attributes();
@@ -59,6 +50,7 @@ int set_memory_decrypted(unsigned long addr, int numpages)
 	if (!PAGE_ALIGNED(addr))
 		return -EINVAL;
 
+	memset((void *)addr, 0, (size_t)numpages << PAGE_SHIFT);
 	uv_share_page(PHYS_PFN(__pa(addr)), numpages);
 
 	return 0;
