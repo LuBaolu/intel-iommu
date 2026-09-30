@@ -30,6 +30,8 @@
 #include <asm/kvm_rmi.h>
 #include <asm/vncr_mapping.h>
 
+#define kvm_file_to_kvm_arch arm64
+
 #define __KVM_HAVE_ARCH_INTC_INITIALIZED
 
 #define KVM_HALT_POLL_NS_DEFAULT 500000
