@@ -281,6 +281,8 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 	pdev = to_pci_dev(iommufd_vdevice_to_device(vdev));
 	pf0 = pci_tsm_context_pf0(context);
 	guard(mutex)(&pf0->lock);
+	if (pf0->removing && info->op != TSM_REQ_SET_TDI_STATE)
+		return -ENODEV;
 	switch (info->op) {
 	case TSM_REQ_VALIDATE_MMIO: {
 		struct arm64_vdev_validate_mmio_guest_req req;
@@ -300,6 +302,9 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 			return -EINVAL;
 		if (copy_from_user(&req, info->req, sizeof(req)))
 			return -EFAULT;
+		if (pf0->removing && req.tdi_state !=
+		    RHI_DA_TDI_CONFIG_UNLOCKED)
+			return -ENODEV;
 		switch (req.tdi_state) {
 		case RHI_DA_TDI_CONFIG_UNLOCKED:
 			ret = cca_vdevice_unmap(cca_vdev);
