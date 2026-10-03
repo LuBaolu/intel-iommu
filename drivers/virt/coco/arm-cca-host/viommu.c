@@ -216,7 +216,8 @@ static int cca_vdevice_init(struct iommufd_vdevice *vdev)
 	dsm_dev = pci_tsm_context_dsm_dev(context);
 
 	scoped_guard(mutex, &pf0->lock) {
-		ret = cca_psmmu_create_l2(psmmu, params.l2_sid);
+		ret = pf0->removing ? -ENODEV :
+			cca_psmmu_create_l2(psmmu, params.l2_sid);
 		if (!ret) {
 			rmm_vdev = cca_vdev_create(host_tdi, &kvm->arch.realm,
 						   pdev, dsm_dev, vdev->virt_id);
