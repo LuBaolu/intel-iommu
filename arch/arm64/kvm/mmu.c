@@ -1168,6 +1168,28 @@ void kvm_uninit_stage2_mmu(struct kvm *kvm)
 	kvm_mmu_free_memory_cache(&kvm->arch.mmu.split_page_cache);
 }
 
+void kvm_realm_unmap_userspace_memslots(struct kvm *kvm)
+{
+	struct kvm_memory_slot *slot;
+	struct kvm_memslots *slots;
+	int idx, bkt;
+
+	idx = srcu_read_lock(&kvm->srcu);
+	write_lock(&kvm->mmu_lock);
+	slots = kvm_memslots(kvm);
+	kvm_for_each_memslot(slot, bkt, slots) {
+		if (kvm_memslot_is_gmem_only(slot))
+			continue;
+
+		kvm_stage2_unmap_range_filter(&kvm->arch.mmu,
+					      slot->base_gfn << PAGE_SHIFT,
+					      slot->npages << PAGE_SHIFT, true,
+					      KVM_FILTER_SHARED);
+	}
+	write_unlock(&kvm->mmu_lock);
+	srcu_read_unlock(&kvm->srcu, idx);
+}
+
 static void stage2_unmap_memslot(struct kvm *kvm,
 				 struct kvm_memory_slot *memslot)
 {
@@ -3084,17 +3106,19 @@ void kvm_arch_flush_shadow_memslot(struct kvm *kvm,
 {
 	gpa_t gpa = slot->base_gfn << PAGE_SHIFT;
 	phys_addr_t size = slot->npages << PAGE_SHIFT;
+	enum kvm_gfn_range_filter filter = KVM_FILTER_SHARED | KVM_FILTER_PRIVATE;
+
+	/*
+	 * guest_memfd invalidates its mappings before the slot is unbound.
+	 * Mixed slots still need their userspace-backed shared mappings flushed.
+	 */
+	if (kvm_memslot_is_gmem_only(slot))
+		return;
+	if (slot->flags & KVM_MEM_GUEST_MEMFD)
+		filter = KVM_FILTER_SHARED;
 
 	write_lock(&kvm->mmu_lock);
-	/*
-	 * FIXME!! Move invalidation of both shared and private guest_memfd
-	 * mappings to guest_memfd lifetime management and skip those slots
-	 * here. Currently only private device mappings are left to guest_memfd
-	 * teardown.
-	 */
-	kvm_stage2_unmap_range_filter(&kvm->arch.mmu, gpa, size, true,
-		(slot->flags & KVM_MEMSLOT_GMEM_DEVICE) ?
-		KVM_FILTER_SHARED : KVM_FILTER_SHARED | KVM_FILTER_PRIVATE);
+	kvm_stage2_unmap_range_filter(&kvm->arch.mmu, gpa, size, true, filter);
 	kvm_nested_s2_unmap(kvm, true);
 	write_unlock(&kvm->mmu_lock);
 }

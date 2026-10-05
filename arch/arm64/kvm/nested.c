@@ -1363,7 +1363,11 @@ void kvm_arch_flush_shadow_all(struct kvm *kvm)
 		if (!WARN_ON(atomic_read(&mmu->refcnt)))
 			kvm_free_stage2_pgd(mmu);
 	}
-	kvm_uninit_stage2_mmu(kvm);
+	/* guest_memfd-only mappings do not depend on the exiting mm. */
+	if (kvm_vm_is_realm(kvm))
+		kvm_realm_unmap_userspace_memslots(kvm);
+	else
+		kvm_uninit_stage2_mmu(kvm);
 }
 
 /*
