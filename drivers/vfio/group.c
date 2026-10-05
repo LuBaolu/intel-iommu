@@ -271,7 +271,8 @@ static struct file *vfio_device_open_file(struct vfio_device *device)
 		goto err_free;
 
 	filep = anon_inode_getfile_fmode("[vfio-device]", &vfio_device_fops,
-				   df, O_RDWR, FMODE_PREAD | FMODE_PWRITE);
+					 &df->gmem_ops,
+					 O_RDWR, FMODE_PREAD | FMODE_PWRITE);
 	if (IS_ERR(filep)) {
 		ret = PTR_ERR(filep);
 		goto err_close_device;
@@ -282,7 +283,6 @@ static struct file *vfio_device_open_file(struct vfio_device *device)
 	 * associated to this device using unmap_mapping_range().
 	 */
 	filep->f_mapping = device->inode->i_mapping;
-
 	if (device->group->type == VFIO_NO_IOMMU)
 		dev_warn(device->dev, "vfio-noiommu device opened by user "
 			 "(%s:%d)\n", current->comm, task_pid_nr(current));

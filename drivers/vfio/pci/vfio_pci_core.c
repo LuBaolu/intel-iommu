@@ -1714,6 +1714,7 @@ static void vfio_pci_zap_bars(struct vfio_pci_core_device *vdev)
 	loff_t len = end - start;
 
 	unmap_mapping_range(core_vdev->inode->i_mapping, start, len, true);
+	vfio_pci_gmem_invalidate(vdev);
 }
 
 void vfio_pci_zap_and_down_write_memory_lock(struct vfio_pci_core_device *vdev)
@@ -1761,6 +1762,18 @@ vm_fault_t vfio_pci_vmf_insert_pfn(struct vfio_pci_core_device *vdev,
 	lockdep_assert_held_read(&vdev->memory_lock);
 
 	if (vdev->pm_runtime_engaged || !__vfio_pci_memory_enabled(vdev))
+		return VM_FAULT_SIGBUS;
+
+	/* Use base-page mappings so each BAR page gets its own access check. */
+	if (order && vdev->gmem)
+		return VM_FAULT_FALLBACK;
+	/*
+	 * A VFIO mmap can outlive conversion to private memory. Recheck
+	 * the guest_memfd and VM attributes for this page so a fault
+	 * cannot restore a host mapping of a private BAR range.
+	 */
+	if (!vfio_pci_gmem_access_allowed(vdev,
+				(u64)vmf->pgoff << PAGE_SHIFT, PAGE_SIZE))
 		return VM_FAULT_SIGBUS;
 
 	if (!order)

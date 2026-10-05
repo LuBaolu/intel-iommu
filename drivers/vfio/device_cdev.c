@@ -46,7 +46,7 @@ int vfio_device_fops_cdev_open(struct inode *inode, struct file *filep)
 		goto err_put_registration;
 	}
 
-	filep->private_data = df;
+	filep->private_data = &df->gmem_ops;
 
 	/*
 	 * Use the pseudo fs inode on the device to link all mmaps
@@ -54,7 +54,6 @@ int vfio_device_fops_cdev_open(struct inode *inode, struct file *filep)
 	 * associated to this device using unmap_mapping_range().
 	 */
 	filep->f_mapping = device->inode->i_mapping;
-
 	return 0;
 
 err_put_registration:

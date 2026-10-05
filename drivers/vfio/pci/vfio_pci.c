@@ -147,6 +147,9 @@ static int vfio_pci_init_dev(struct vfio_device *core_vdev)
 }
 
 static const struct vfio_device_ops vfio_pci_ops = {
+#if IS_ENABLED(CONFIG_VFIO_PCI_GMEM)
+	.gmem_ops = &vfio_pci_gmem_ops,
+#endif
 	.name		= "vfio-pci",
 	.init		= vfio_pci_init_dev,
 	.release	= vfio_pci_core_release_dev,

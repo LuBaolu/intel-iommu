@@ -149,7 +149,30 @@ struct vfio_pci_core_device {
 	struct notifier_block	nb;
 	struct rw_semaphore	memory_lock;
 	struct list_head	dmabufs;
+	/* Attached provider; publication/removal require memory_lock for write. */
+	struct vfio_pci_gmem *gmem;
 };
+
+#if IS_ENABLED(CONFIG_VFIO_PCI_GMEM)
+extern const struct guest_memfd_device_operations vfio_pci_gmem_ops;
+void vfio_pci_gmem_invalidate(struct vfio_pci_core_device *vdev);
+bool vfio_pci_gmem_access_allowed(struct vfio_pci_core_device *vdev,
+				u64 offset, u64 size);
+bool vfio_pci_gmem_io_access_allowed(struct vfio_pci_core_device *vdev,
+				   void __iomem *io, size_t size);
+#else
+static inline void vfio_pci_gmem_invalidate(struct vfio_pci_core_device *vdev) {}
+static inline bool vfio_pci_gmem_access_allowed(struct vfio_pci_core_device *vdev,
+					     u64 offset, u64 size)
+{
+	return true;
+}
+static inline bool vfio_pci_gmem_io_access_allowed(struct vfio_pci_core_device *vdev,
+						void __iomem *io, size_t size)
+{
+	return true;
+}
+#endif
 
 enum vfio_pci_io_width {
 	VFIO_PCI_IO_WIDTH_1 = 1,

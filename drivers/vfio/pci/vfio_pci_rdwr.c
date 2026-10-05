@@ -44,7 +44,9 @@ int vfio_pci_core_iowrite##size(struct vfio_pci_core_device *vdev,	\
 {									\
 	if (test_mem) {							\
 		down_read(&vdev->memory_lock);				\
-		if (!__vfio_pci_memory_enabled(vdev)) {			\
+		if (!__vfio_pci_memory_enabled(vdev) ||			\
+		    !vfio_pci_gmem_io_access_allowed(vdev, io,		\
+						     sizeof(u##size))) {	\
 			up_read(&vdev->memory_lock);			\
 			return -EIO;					\
 		}							\
@@ -70,7 +72,9 @@ int vfio_pci_core_ioread##size(struct vfio_pci_core_device *vdev,	\
 {									\
 	if (test_mem) {							\
 		down_read(&vdev->memory_lock);				\
-		if (!__vfio_pci_memory_enabled(vdev)) {			\
+		if (!__vfio_pci_memory_enabled(vdev) ||			\
+		    !vfio_pci_gmem_io_access_allowed(vdev, io,		\
+						     sizeof(u##size))) {	\
 			up_read(&vdev->memory_lock);			\
 			return -EIO;					\
 		}							\
@@ -380,7 +384,10 @@ static int vfio_pci_ioeventfd_handler(void *opaque, void *unused)
 	if (ioeventfd->test_mem) {
 		if (!down_read_trylock(&vdev->memory_lock))
 			return 1; /* Lock contended, use thread */
-		if (!__vfio_pci_memory_enabled(vdev)) {
+		if (!__vfio_pci_memory_enabled(vdev) ||
+		    !vfio_pci_gmem_access_allowed(vdev,
+				VFIO_PCI_INDEX_TO_OFFSET(ioeventfd->bar) +
+				ioeventfd->pos, ioeventfd->count)) {
 			up_read(&vdev->memory_lock);
 			return 0;
 		}

@@ -7,6 +7,7 @@
 #define __VFIO_VFIO_H__
 
 #include <linux/file.h>
+#include <linux/guest_memfd.h>
 #include <linux/device.h>
 #include <linux/cdev.h>
 #include <linux/module.h>
@@ -17,6 +18,8 @@ struct iommu_group;
 struct vfio_container;
 
 struct vfio_device_file {
+	/* Exposed through file->private_data for VFIO device files. */
+	struct guest_memfd_device_operations gmem_ops;
 	struct vfio_device *device;
 	struct vfio_group *group;
 
@@ -26,6 +29,11 @@ struct vfio_device_file {
 	struct file *kvm;
 	struct iommufd_ctx *iommufd; /* protected by struct vfio_device_set::lock */
 };
+
+static inline struct vfio_device_file *vfio_device_file_from_file(struct file *file)
+{
+	return container_of(file->private_data, struct vfio_device_file, gmem_ops);
+}
 
 void vfio_device_put_registration(struct vfio_device *device);
 bool vfio_device_try_get_registration(struct vfio_device *device);

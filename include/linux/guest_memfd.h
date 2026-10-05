@@ -52,6 +52,9 @@ struct guest_memfd_device {
 	struct kvm *kvm;
 	u64 size;
 	void *core;
+	void (*invalidate)(struct guest_memfd_device *gdev);
+	bool (*has_private)(struct guest_memfd_device *gdev);
+	bool (*host_accessible)(struct guest_memfd_device *gdev, u64 offset, u64 size);
 };
 
 /**

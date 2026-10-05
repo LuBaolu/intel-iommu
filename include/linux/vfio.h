@@ -113,7 +113,10 @@ struct vfio_device {
  *             this device is attached to.
  * @device_feature: Optional, fill in the VFIO_DEVICE_FEATURE ioctl
  */
+struct guest_memfd_device_operations;
+
 struct vfio_device_ops {
+	const struct guest_memfd_device_operations *gmem_ops;
 	char	*name;
 	int	(*init)(struct vfio_device *vdev);
 	void	(*release)(struct vfio_device *vdev);

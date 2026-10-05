@@ -509,6 +509,8 @@ vfio_allocate_device_file(struct vfio_device *device)
 	if (!df)
 		return ERR_PTR(-ENOMEM);
 
+	if (device->ops->gmem_ops)
+		df->gmem_ops = *device->ops->gmem_ops;
 	df->device = device;
 	spin_lock_init(&df->kvm_ref_lock);
 
@@ -642,7 +644,7 @@ static inline void vfio_device_pm_runtime_put(struct vfio_device *device)
  */
 static int vfio_device_fops_release(struct inode *inode, struct file *filep)
 {
-	struct vfio_device_file *df = filep->private_data;
+	struct vfio_device_file *df = vfio_device_file_from_file(filep);
 	struct vfio_device *device = df->device;
 
 	if (df->group)
@@ -1340,7 +1342,7 @@ out_free:
 static long vfio_device_fops_unl_ioctl(struct file *filep,
 				       unsigned int cmd, unsigned long arg)
 {
-	struct vfio_device_file *df = filep->private_data;
+	struct vfio_device_file *df = vfio_device_file_from_file(filep);
 	struct vfio_device *device = df->device;
 	void __user *uptr = (void __user *)arg;
 	int ret;
@@ -1393,7 +1395,7 @@ out:
 static ssize_t vfio_device_fops_read(struct file *filep, char __user *buf,
 				     size_t count, loff_t *ppos)
 {
-	struct vfio_device_file *df = filep->private_data;
+	struct vfio_device_file *df = vfio_device_file_from_file(filep);
 	struct vfio_device *device = df->device;
 
 	/* Paired with smp_store_release() following vfio_df_open() */
@@ -1410,7 +1412,7 @@ static ssize_t vfio_device_fops_write(struct file *filep,
 				      const char __user *buf,
 				      size_t count, loff_t *ppos)
 {
-	struct vfio_device_file *df = filep->private_data;
+	struct vfio_device_file *df = vfio_device_file_from_file(filep);
 	struct vfio_device *device = df->device;
 
 	/* Paired with smp_store_release() following vfio_df_open() */
@@ -1425,7 +1427,7 @@ static ssize_t vfio_device_fops_write(struct file *filep,
 
 static int vfio_device_fops_mmap(struct file *filep, struct vm_area_struct *vma)
 {
-	struct vfio_device_file *df = filep->private_data;
+	struct vfio_device_file *df = vfio_device_file_from_file(filep);
 	struct vfio_device *device = df->device;
 
 	/* Paired with smp_store_release() following vfio_df_open() */
@@ -1442,7 +1444,7 @@ static int vfio_device_fops_mmap(struct file *filep, struct vm_area_struct *vma)
 static void vfio_device_show_fdinfo(struct seq_file *m, struct file *filep)
 {
 	char *path;
-	struct vfio_device_file *df = filep->private_data;
+	struct vfio_device_file *df = vfio_device_file_from_file(filep);
 	struct vfio_device *device = df->device;
 
 	path = kobject_get_path(&device->dev->kobj, GFP_KERNEL);
@@ -1470,11 +1472,9 @@ const struct file_operations vfio_device_fops = {
 
 static struct vfio_device *vfio_device_from_file(struct file *file)
 {
-	struct vfio_device_file *df = file->private_data;
-
 	if (file->f_op != &vfio_device_fops)
 		return NULL;
-	return df->device;
+	return vfio_device_file_from_file(file)->device;
 }
 
 /**
@@ -1517,7 +1517,7 @@ EXPORT_SYMBOL_GPL(vfio_file_enforced_coherent);
 
 static void vfio_device_file_set_kvm(struct file *file, struct file *kvm)
 {
-	struct vfio_device_file *df = file->private_data;
+	struct vfio_device_file *df = vfio_device_file_from_file(file);
 	struct file *old;
 
 	if (kvm)
@@ -1814,9 +1814,15 @@ static int __init vfio_init(void)
 
 	ida_init(&vfio.device_ida);
 
+	if (IS_ENABLED(CONFIG_KVM_GUEST_MEMFD)) {
+		ret = guest_memfd_register_device_fops(&vfio_device_fops);
+		if (ret)
+			return ret;
+	}
+
 	ret = vfio_group_init();
 	if (ret)
-		return ret;
+		goto err_group;
 
 	ret = vfio_virqfd_init();
 	if (ret)
@@ -1834,13 +1840,15 @@ static int __init vfio_init(void)
 	vfio_debugfs_create_root();
 	pr_info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
 	return 0;
-
 err_alloc_dev_chrdev:
 	class_unregister(&vfio_device_class);
 err_dev_class:
 	vfio_virqfd_exit();
 err_virqfd:
 	vfio_group_cleanup();
+err_group:
+	if (IS_ENABLED(CONFIG_KVM_GUEST_MEMFD))
+		guest_memfd_unregister_device_fops(&vfio_device_fops);
 	return ret;
 }
 
@@ -1853,6 +1861,8 @@ static void __exit vfio_cleanup(void)
 	vfio_virqfd_exit();
 	vfio_group_cleanup();
 	xa_destroy(&vfio_device_set_xa);
+	if (IS_ENABLED(CONFIG_KVM_GUEST_MEMFD))
+		guest_memfd_unregister_device_fops(&vfio_device_fops);
 }
 
 module_init(vfio_init);
