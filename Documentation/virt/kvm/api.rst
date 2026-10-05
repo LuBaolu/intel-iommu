@@ -7695,10 +7695,10 @@ the ``KVM_EXIT_ARM_SEA_FLAG_GPA_VALID`` flag is set. Otherwise, the value of
 			__u64 response;
 		} cca_exit;
 
-Used on arm64 systems. When the VM capability ``KVM_CAP_ARM_RMI`` is
-enabled, KVM generates a VM exit whenever the guest needs host assistance
-to validate a device-memory GPA-to-PA mapping. The ``nr`` field records
-the exit reason; currently the following values are defined:
+Used on arm64 systems. With ``KVM_CAP_ARM_RMI`` enabled, KVM exits when a
+guest needs host assistance to validate a device-memory GPA-to-PA mapping.
+The ``nr`` field identifies the event; currently the following values are
+defined:
 
 * ``RMI_EXIT_VDEV_VALIDATE_MAPPING``: the guest wants the host to validate or install a
   device-memory mapping.

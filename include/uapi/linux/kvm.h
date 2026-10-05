@@ -194,6 +194,8 @@ struct kvm_exit_snp_req_certs {
 #define KVM_EXIT_ARM_LDST64B      42
 #define KVM_EXIT_SNP_REQ_CERTS    43
 #define KVM_EXIT_ARM64_TIO	  44
+#define KVM_ARM64_TIO_RESPONSE_REJECT	0
+#define KVM_ARM64_TIO_RESPONSE_APPROVE	1
 
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
@@ -504,7 +506,7 @@ struct kvm_run {
 			__u64 nr;
 			__u64 vdev_id;
 			__u64 gpa_base;
-			__u64 gpa_top; /* input and output */
+			__u64 gpa_top; /* exclusive */
 			__u64 pa_base;
 			__u64 response;
 		} cca_exit;
