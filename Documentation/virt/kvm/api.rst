@@ -7700,8 +7700,19 @@ guest needs host assistance to validate a device-memory GPA-to-PA mapping.
 The ``nr`` field identifies the event; currently the following values are
 defined:
 
-* ``RMI_EXIT_VDEV_VALIDATE_MAPPING``: the guest wants the host to validate or install a
-  device-memory mapping.
+* ``RMI_EXIT_VDEV_VALIDATE_MAPPING``: the guest asks the VMM to validate a
+  device-memory GPA-to-PA mapping. KVM supplies the vDEVICE ID, the half-open
+  GPA range, and the starting PA from the protected REC exit. Userspace sets
+  ``response`` to ``KVM_ARM64_TIO_RESPONSE_APPROVE`` or
+  ``KVM_ARM64_TIO_RESPONSE_REJECT`` before the next ``KVM_RUN``. The default
+  is rejection. KVM uses the original REC values for the mapping and ignores
+  userspace changes to the request fields. Approval is consumed once.
+
+Private/shared state belongs to each device-memory interval. Guest-requested
+conversion is permitted in every TDI state. UNLOCK requires all private
+intervals to have completed shared cleanup; LOCK and RUN do not change them.
+Host BAR access requires shared guest_memfd attributes for the requested
+interval.
 
 The ``flags`` field must be zero.
 
