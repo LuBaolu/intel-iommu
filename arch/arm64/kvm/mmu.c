@@ -2990,6 +2990,12 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 		}
 	}
 
+	if (old && (old->flags & KVM_MEMSLOT_GMEM_DEVICE)) {
+		if (change != KVM_MR_DELETE)
+			return -EINVAL;
+		return 0;
+	}
+
 	if (change != KVM_MR_CREATE && change != KVM_MR_MOVE &&
 			change != KVM_MR_FLAGS_ONLY)
 		return 0;
@@ -3081,7 +3087,15 @@ void kvm_arch_flush_shadow_memslot(struct kvm *kvm,
 	phys_addr_t size = slot->npages << PAGE_SHIFT;
 
 	write_lock(&kvm->mmu_lock);
-	kvm_stage2_unmap_range(&kvm->arch.mmu, gpa, size, true);
+	/*
+	 * FIXME!! Move invalidation of both shared and private guest_memfd
+	 * mappings to guest_memfd lifetime management and skip those slots
+	 * here. Currently only private device mappings are left to guest_memfd
+	 * teardown.
+	 */
+	kvm_stage2_unmap_range_filter(&kvm->arch.mmu, gpa, size, true,
+		(slot->flags & KVM_MEMSLOT_GMEM_DEVICE) ?
+		KVM_FILTER_SHARED : KVM_FILTER_SHARED | KVM_FILTER_PRIVATE);
 	kvm_nested_s2_unmap(kvm, true);
 	write_unlock(&kvm->mmu_lock);
 }
