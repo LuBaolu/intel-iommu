@@ -1706,6 +1706,11 @@ int realm_dev_mem_unmap_range(struct kvm *kvm,
 }
 EXPORT_SYMBOL_GPL(realm_dev_mem_unmap_range);
 
+bool kvm_arch_gmem_device_supported(struct kvm *kvm)
+{
+	return kvm_vm_is_realm(kvm);
+}
+
 void kvm_arch_gmem_device_bind(struct kvm_memory_slot *slot,
 			       const struct guest_memfd_device_binding *binding)
 {
