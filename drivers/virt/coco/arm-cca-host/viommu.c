@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pci-tsm.h>
+#include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/stddef.h>
 #include <linux/tsm.h>
@@ -314,8 +315,12 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 		    RHI_DA_TDI_CONFIG_UNLOCKED)
 			return -ENODEV;
 		switch (req.state.tdi_state) {
-		case RHI_DA_TDI_CONFIG_UNLOCKED:
+		case RHI_DA_TDI_CONFIG_UNLOCKED: {
+			/* Serialize UNLOCK with device MMIO conversion. */
+			guard(mutex)(&vdev->mmio_lock);
+
 			return cca_vdev_device_unlock(host_tdi, pdev);
+		}
 		case RHI_DA_TDI_CONFIG_LOCKED:
 			return cca_vdev_device_lock(host_tdi, pdev);
 		case RHI_DA_TDI_CONFIG_RUN:
@@ -366,6 +371,17 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 }
 
 
+static int cca_vdevice_get_mmio_owner(struct iommufd_vdevice *vdev, struct kvm *kvm,
+				      unsigned long *owner)
+{
+	struct cca_vdevice *cca = container_of(vdev, struct cca_vdevice, core);
+
+	if (!cca->tsm_context || cca->host_tdi.kvm != kvm)
+		return -EINVAL;
+	*owner = virt_to_phys(cca->host_tdi.rmm_vdev);
+	return 0;
+}
+
 static const struct iommufd_viommu_ops cca_viommu_ops = {
 	.flags = IOMMUFD_VIOMMU_NO_HWPT,
 	.get_viommu_size = cca_viommu_get_size,
@@ -374,6 +390,7 @@ static const struct iommufd_viommu_ops cca_viommu_ops = {
 	.vdevice_size = VDEVICE_STRUCT_SIZE(struct cca_vdevice, core),
 	.vdevice_init = cca_vdevice_init,
 	.vdevice_tsm_req = cca_vdevice_tsm_req,
+	.vdevice_get_mmio_owner = cca_vdevice_get_mmio_owner,
 };
 
 const struct iommufd_viommu_ops *
