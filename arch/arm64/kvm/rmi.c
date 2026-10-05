@@ -646,7 +646,7 @@ static int realm_unmap_private_range(struct kvm *kvm,
 	lockdep_assert_held_write(&kvm->mmu_lock);
 
 	if (src_ripas == RMI_DEV)
-		return __realm_dev_mem_unmap(kvm, start, end, may_block);
+		return 0; /* Device providers own fallible private revocation. */
 
 	for (addr = start; addr < end; addr = next_addr) {
 		unsigned long out_range;
@@ -1090,38 +1090,11 @@ out:
 static int realm_set_ipa_state(struct kvm_vcpu *vcpu,
 			       unsigned long start,
 			       unsigned long end,
-			       enum rmi_ripas src_ripas,
 			       enum rmi_ripas target_ripas,
 			       unsigned long *top_ipa)
 {
-	struct kvm *kvm = vcpu->kvm;
-	int ret;
-
-	/*
-	 * We use the RIPAS value to decide between a data_destroy or a
-	 * dev_mem_unmap. Hence call realm_unmap_private_range() before
-	 * ripas_change().
-	 *
-	 * Technically, for private RAM, we don't need to call
-	 * realm_unmap_private_range(), because any RIPAS change via RSI would
-	 * trigger a memory fault exit. That would, in turn, invalidate the
-	 * guest's memfd range, which then triggers realm_unmap_private_range()
-	 * automatically.
-	 *
-	 * However, this doesn’t apply to RIPAS_DEV, because we currently
-	 * lack a user-space API to call realm_dev_mem_unmap() in response to a
-	 * memory fault exit. Therefore, the unmap must happen explicitly before
-	 * the RIPAS change.
-	 */
-	if (target_ripas == RMI_EMPTY) {
-		ret = realm_unmap_private_range(kvm, start, end, false,
-						src_ripas);
-		if (ret)
-			return ret;
-	}
-	ret = ripas_change(kvm, vcpu, start, end, RIPAS_SET, top_ipa);
-
-	return ret;
+	/* guest_memfd conversion performs memory cleanup before this change. */
+	return ripas_change(vcpu->kvm, vcpu, start, end, RIPAS_SET, top_ipa);
 }
 
 static int realm_init_ipa_state(struct kvm *kvm,
@@ -1384,15 +1357,26 @@ static int kvm_complete_ripas_change(struct kvm_vcpu *vcpu)
 	unsigned long base = rec->run->exit.ripas_base;
 	unsigned long top = rec->run->exit.ripas_top;
 	enum rmi_ripas target_ripas = rec->run->exit.ripas_value;
-	enum rmi_ripas src_ripas = RMI_EMPTY;
 	unsigned long top_ipa = base;
 	unsigned long mmu_seq = 0;
 	bool attributes_match;
-	bool dev_ripas_change;
 	int ret;
 
 	if (base >= top)
 		return base == top ? 1 : -EINVAL;
+
+	ret = realm_gmem_validate_ripas(kvm, base, top, target_ripas);
+	if (ret == -ENOENT) {
+		kvm_prepare_memory_fault_exit(vcpu, base, top - base,
+					      false, false,
+					      target_ripas == RMI_RAM);
+		kvm_make_request(KVM_REQ_RMI, vcpu);
+		return -EFAULT;
+	}
+	if (ret) {
+		kvm_make_request(KVM_REQ_RMI, vcpu);
+		return ret;
+	}
 
 	do {
 		attributes_match = realm_ripas_attributes_match(vcpu, base, top,
@@ -1403,26 +1387,8 @@ static int kvm_complete_ripas_change(struct kvm_vcpu *vcpu)
 		if (ret)
 			return ret;
 		write_lock(&kvm->mmu_lock);
-		/*
-		 * Device mappings are not backed by guest_memfd. Detect the
-		 * source RIPAS while holding mmu_lock so DEV -> EMPTY can unmap
-		 * the device mapping without requiring memory attributes.
-		 */
-		if (target_ripas == RMI_EMPTY) {
-			ret = realm_get_ripas(kvm, base, &src_ripas);
-			if (ret) {
-				write_unlock(&kvm->mmu_lock);
-				goto out_handle_error;
-			}
-		}
-
-		if (target_ripas == RMI_DEV || src_ripas == RMI_DEV)
-			dev_ripas_change = true;
-		else
-			dev_ripas_change = false;
-
-		/* Device RIPAS transitions have no guest_memfd backing. */
-		if (!dev_ripas_change) {
+		/* RIPAS_DEV initialization precedes the validation/map request. */
+		if (target_ripas != RMI_DEV) {
 			if (!attributes_match) {
 				write_unlock(&kvm->mmu_lock);
 				kvm_prepare_memory_fault_exit(vcpu, base,
@@ -1438,12 +1404,10 @@ static int kvm_complete_ripas_change(struct kvm_vcpu *vcpu)
 				continue;
 			}
 		}
-		ret = realm_set_ipa_state(vcpu, base, top, src_ripas,
-					  target_ripas,
+		ret = realm_set_ipa_state(vcpu, base, top, target_ripas,
 					  &top_ipa);
 		write_unlock(&kvm->mmu_lock);
 
-out_handle_error:
 		if (ret == -ENOMEM) {
 			if (top_ipa == base) {
 				rec->run->exit.ripas_base = base;
@@ -1755,6 +1719,13 @@ int kvm_arch_gmem_device_map(struct kvm *kvm,
 {
 	return realm_dev_mem_map(kvm, slot->arch.device.rmm_vdev,
 				 gpa, gpa + size, pa);
+}
+
+int kvm_arch_gmem_device_unmap(struct kvm *kvm, u64 gpa, u64 size)
+{
+	if (!size || gpa + size < gpa)
+		return -EINVAL;
+	return realm_dev_mem_unmap_range(kvm, gpa, gpa + size);
 }
 
 static void kvm_complete_vdev_map_validate(struct kvm_vcpu *vcpu)

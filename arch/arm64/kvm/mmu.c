@@ -1782,6 +1782,7 @@ static bool private_ipa_fault(struct kvm *kvm, phys_addr_t fault_ipa);
 static int gmem_abort(const struct kvm_s2_fault_desc *s2fd,
 		      struct kvm_s2_fault_result *result)
 {
+	bool device = s2fd->memslot->flags & KVM_MEMSLOT_GMEM_DEVICE;
 	bool write_fault, exec_fault;
 	bool perm_fault = kvm_s2_fault_is_perm(s2fd);
 	enum kvm_pgtable_walk_flags flags = KVM_PGTABLE_WALK_SHARED;
@@ -1801,6 +1802,9 @@ static int gmem_abort(const struct kvm_s2_fault_desc *s2fd,
 
 	if (KVM_BUG_ON(!kvm_slot_has_gmem(s2fd->memslot), kvm))
 		return -EINVAL;
+
+	if (device && (s2fd->nested || kvm_s2_fault_is_exec(s2fd)))
+		return -EACCES;
 
 	if (!perm_fault) {
 		memcache = get_mmu_memcache(vcpu);
@@ -1828,7 +1832,7 @@ static int gmem_abort(const struct kvm_s2_fault_desc *s2fd,
 	/* Pairs with the smp_wmb() in kvm_mmu_invalidate_end(). */
 	smp_rmb();
 
-	if (kvm_vm_is_realm(kvm) &&
+	if (!device && kvm_vm_is_realm(kvm) &&
 	    is_private != kvm_gmem_is_private_gfn(kvm, gfn)) {
 		if (!result)
 			kvm_prepare_memory_fault_exit(vcpu, gpa, PAGE_SIZE,
@@ -1838,6 +1842,11 @@ static int gmem_abort(const struct kvm_s2_fault_desc *s2fd,
 	}
 
 	ret = kvm_gmem_get_pfn(kvm, s2fd->memslot, gfn, &pfn, NULL);
+	if (ret == -EAGAIN && device && !result) {
+		kfree(mapping);
+		cond_resched();
+		return 0;
+	}
 	if (ret) {
 		/* If result is non-NULL this is a synthetic fault. */
 		if (!result)
@@ -1854,7 +1863,9 @@ static int gmem_abort(const struct kvm_s2_fault_desc *s2fd,
 	if (s2fd->nested)
 		prot = adjust_nested_fault_perms(s2fd->nested, prot);
 
-	if (exec_fault || cpus_have_final_cap(ARM64_HAS_CACHE_DIC))
+	if (device)
+		prot |= KVM_PGTABLE_PROT_DEVICE;
+	if (!device && (exec_fault || cpus_have_final_cap(ARM64_HAS_CACHE_DIC)))
 		prot |= KVM_PGTABLE_PROT_X;
 
 	if (s2fd->nested)
@@ -1866,6 +1877,11 @@ static int gmem_abort(const struct kvm_s2_fault_desc *s2fd,
 		goto out_unlock;
 	}
 
+	if (device && is_private) {
+		/* Private device faults can retry an installed map, never create RAM. */
+		ret = -EACCES;
+		goto out_unlock;
+	}
 	if (kvm_vm_is_realm(kvm)) {
 		prot &= ~KVM_PGTABLE_PROT_X;
 		ret = realm_map_ipa(kvm, s2fd->fault_ipa, pfn,
@@ -1901,7 +1917,7 @@ out_unlock:
 	kvm_fault_unlock(kvm);
 	kfree(mapping);
 
-	if ((prot & KVM_PGTABLE_PROT_W) && !ret)
+	if (!device && (prot & KVM_PGTABLE_PROT_W) && !ret)
 		mark_page_dirty_in_slot(kvm, s2fd->memslot, gfn);
 
 	if (ret == -EAGAIN)
@@ -2757,6 +2773,8 @@ bool kvm_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range)
 	kvm_stage2_unmap_range_filter(&kvm->arch.mmu, range->start << PAGE_SHIFT,
 					(range->end - range->start) << PAGE_SHIFT,
 					range->may_block,
+					(range->slot->flags & KVM_MEMSLOT_GMEM_DEVICE) ?
+					(range->attr_filter & KVM_FILTER_SHARED) :
 					range->attr_filter);
 	kvm_nested_s2_unmap(kvm, range->may_block);
 	return false;
@@ -2994,6 +3012,9 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 	/* guest_memfd is incompatible with MTE. */
 	if (kvm_slot_has_gmem(new) && kvm_has_mte(kvm))
 		return -EINVAL;
+
+	if (new->flags & KVM_MEMSLOT_GMEM_DEVICE)
+		return kvm_vm_is_realm(kvm) ? 0 : -EINVAL;
 
 	hva = new->userspace_addr;
 	reg_end = hva + (new->npages << PAGE_SHIFT);
