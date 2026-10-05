@@ -14,7 +14,7 @@
  * Called by vfio_pci_zap_bars() after it removes host BAR mappings. Notify
  * guest_memfd synchronously so KVM removes the corresponding shared guest
  * mappings. This helper does not remove host mappings or change attributes.
- * Skip notification if no provider is attached.
+ * Skip notification if no provider is attached or its callbacks are detached.
  *
  * The guest_memfd callback takes SRCU and the KVM MMU lock without taking
  * the inode invalidate lock, which may already be held during conversion.
@@ -25,7 +25,7 @@ void vfio_pci_gmem_invalidate(struct vfio_pci_core_device *vdev)
 	struct vfio_pci_gmem *ctx = vdev->gmem;
 
 	lockdep_assert_held_write(&vdev->memory_lock);
-	if (ctx)
+	if (ctx && !ctx->callbacks_detached)
 		ctx->context.device->invalidate(ctx->context.device);
 }
 
@@ -33,11 +33,12 @@ void vfio_pci_gmem_invalidate(struct vfio_pci_core_device *vdev)
  * vfio_gmem_invalidate_mmio() - revoke host and shared guest BAR translations
  * @data: attached provider context
  *
- * Initiate BAR revocation for conversion or access refresh. Call
+ * Initiate BAR revocation for conversion, access refresh or teardown. Call
  * vfio_pci_zap_and_down_write_memory_lock() to remove host BAR mappings;
  * its BAR zap path also calls vfio_pci_gmem_invalidate() to remove the
  * corresponding shared guest mappings. Release the VFIO memory lock before
- * returning.
+ * returning. Host mappings are removed even if guest_memfd callbacks are
+ * detached.
  *
  * During private conversion, the caller holds the inode invalidate lock to
  * prevent new guest_memfd faults. Host faults and I/O try that lock when
@@ -68,6 +69,7 @@ void vfio_gmem_invalidate_mmio(void *data)
  * Consult completed guest_memfd attributes for the requested interval.
  * Private mappings in another interval do not block this access. Try the
  * inode lock instead of waiting in the reverse order from conversion.
+ * Detachment excludes access during teardown.
  *
  * Return: true when the requested interval is accessible.
  */
@@ -84,6 +86,8 @@ bool vfio_pci_gmem_access_allowed(struct vfio_pci_core_device *vdev,
 	if (!ctx->ivdev)
 		return false;
 
+	if (ctx->callbacks_detached)
+		return false;
 	return ctx->context.device->host_accessible(ctx->context.device,
 						    offset, size);
 }

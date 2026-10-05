@@ -17,6 +17,12 @@ struct vfio_pci_gmem {
 	unsigned long owner;
 	resource_size_t start[PCI_STD_NUM_BARS];
 	resource_size_t len[PCI_STD_NUM_BARS];
+	/*
+	 * Disables callbacks and new bind/private requests. Set once with
+	 * both the vDEVICE MMIO and VFIO memory locks held; readers hold
+	 * either lock. Shared cleanup remains allowed after detachment.
+	 */
+	bool callbacks_detached;
 };
 
 static inline struct vfio_pci_gmem *

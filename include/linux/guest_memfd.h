@@ -41,6 +41,7 @@ struct guest_memfd_device_operations {
 		const struct guest_memfd_device_request *req);
 	void (*finish_conversion)(struct guest_memfd_device_context *context,
 		const struct guest_memfd_device_request *req);
+	void (*detach)(void *data);
 	void (*release)(void *data);
 };
 

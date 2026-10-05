@@ -381,6 +381,7 @@ static void kvm_gmem_invalidate_end(struct inode *inode, pgoff_t start,
 static int kvm_gmem_device_convert(struct inode *inode, pgoff_t start,
 		pgoff_t nr_pages, const struct guest_memfd_device_request *req,
 		const struct kvm_memory_slot *slot);
+static void kvm_gmem_device_close(struct inode *inode);
 
 static long kvm_gmem_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 {
@@ -502,6 +503,9 @@ static int kvm_gmem_release(struct inode *inode, struct file *file)
 	mutex_lock(&kvm->slots_lock);
 
 	filemap_invalidate_lock(inode->i_mapping);
+
+	if (GMEM_I(inode)->device_ops)
+		kvm_gmem_device_close(inode);
 
 	xa_for_each(&f->bindings, index, slot) {
 		WRITE_ONCE(slot->gmem.file, NULL);
@@ -1359,6 +1363,23 @@ int kvm_gmem_device_map(struct kvm *kvm, u64 gpa, u64 size, u64 pa, u64 vdev_id)
 	return ret;
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_gmem_device_map);
+
+static void kvm_gmem_device_close(struct inode *inode)
+{
+	struct gmem_inode *gi = GMEM_I(inode);
+	int ret;
+
+	gi->device_ops->detach(gi->provider);
+	ret = gi->device_ops->prepare_conversion(gi->provider, NULL);
+	if (!ret) {
+		ret = kvm_gmem_device_make_shared(inode, 0,
+						i_size_read(inode) >> PAGE_SHIFT);
+		if (!ret)
+			WRITE_ONCE(gi->device_has_private, false);
+		gi->device_ops->finish_conversion(gi->provider, NULL);
+	}
+	WRITE_ONCE(gi->device.core, NULL);
+}
 
 static int kvm_gmem_attach_resource(struct kvm *kvm,
 		struct inode *inode, int resource_fd)
