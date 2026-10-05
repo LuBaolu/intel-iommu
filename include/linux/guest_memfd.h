@@ -5,8 +5,42 @@
 #include <linux/types.h>
 
 struct file;
+struct file_operations;
 struct folio;
 struct mempolicy;
+struct kvm;
+struct guest_memfd_device;
+
+/* Binding data stays valid only while the device guest_memfd is active. */
+struct guest_memfd_device_binding {
+	/* Architecture-specific mapping owner, e.g. an RMM vDEVICE handle. */
+	unsigned long owner;
+	u64 vdev_id;
+};
+
+/* Embedded by a device provider and returned from attach(). */
+struct guest_memfd_device_context {
+	struct guest_memfd_device *device;
+};
+
+struct guest_memfd_device_operations {
+	struct guest_memfd_device_context *(*attach)(struct file *resource,
+		struct guest_memfd_device *gdev);
+	int (*bind)(void *data, u64 offset, u64 size,
+		struct guest_memfd_device_binding *binding);
+	int (*get_pfn)(void *data, u64 offset, unsigned long *pfn);
+	void (*release)(void *data);
+};
+
+/* A registered file type stores device operations in file->private_data. */
+int guest_memfd_register_device_fops(const struct file_operations *fops);
+void guest_memfd_unregister_device_fops(const struct file_operations *fops);
+
+struct guest_memfd_device {
+	struct kvm *kvm;
+	u64 size;
+	void *core;
+};
 
 /**
  * struct guest_memfd_provider_operations - Operations for external memory providers

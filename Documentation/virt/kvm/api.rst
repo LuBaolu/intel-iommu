@@ -6527,6 +6527,10 @@ specified via KVM_CREATE_GUEST_MEMFD.  Currently defined flags:
                                 must be a supported resource (e.g. tmpfs mount
                                 root directory). Currently, tmpfs resource pools
                                 require noswap and huge=never mount options.
+  GUEST_MEMFD_FLAG_DEVICE       Use a device resource file as resource_fd. Requires
+                                GUEST_MEMFD_FLAG_USE_RESOURCE and
+                                GUEST_MEMFD_FLAG_INIT_SHARED; mmap is disallowed.
+                                The fd must expose guest_memfd device operations.
   ============================= ================================================
 
 When the KVM MMU performs a PFN lookup to service a guest fault, the fault will

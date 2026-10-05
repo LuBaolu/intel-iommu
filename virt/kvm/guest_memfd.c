@@ -2,11 +2,13 @@
 #include <linux/anon_inodes.h>
 #include <linux/backing-dev.h>
 #include <linux/falloc.h>
+#include <linux/export.h>
 #include <linux/fs.h>
 #include <linux/guest_memfd.h>
 #include <linux/kvm_host.h>
 #include <linux/maple_tree.h>
 #include <linux/mempolicy.h>
+#include <linux/mutex.h>
 #include <linux/pseudo_fs.h>
 #include <linux/pagemap.h>
 #include <linux/swap.h>
@@ -15,6 +17,46 @@
 #include "guest_memfd.h"
 
 static struct vfsmount *kvm_gmem_mnt;
+
+static const struct file_operations *kvm_gmem_device_fops;
+static DEFINE_MUTEX(kvm_gmem_device_fops_lock);
+
+int guest_memfd_register_device_fops(const struct file_operations *fops)
+{
+	int ret = 0;
+
+	mutex_lock(&kvm_gmem_device_fops_lock);
+	if (kvm_gmem_device_fops)
+		ret = -EBUSY;
+	else
+		kvm_gmem_device_fops = fops;
+	mutex_unlock(&kvm_gmem_device_fops_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(guest_memfd_register_device_fops);
+
+void guest_memfd_unregister_device_fops(const struct file_operations *fops)
+{
+	mutex_lock(&kvm_gmem_device_fops_lock);
+	if (kvm_gmem_device_fops == fops)
+		kvm_gmem_device_fops = NULL;
+	mutex_unlock(&kvm_gmem_device_fops_lock);
+}
+EXPORT_SYMBOL_GPL(guest_memfd_unregister_device_fops);
+
+static const struct guest_memfd_device_operations *
+kvm_gmem_device_ops(struct file *file)
+{
+	const struct guest_memfd_device_operations *ops = NULL;
+
+	mutex_lock(&kvm_gmem_device_fops_lock);
+	/* The caller's file reference keeps private_data alive. */
+	if (file->f_op == kvm_gmem_device_fops)
+		ops = file->private_data;
+	mutex_unlock(&kvm_gmem_device_fops_lock);
+	return ops;
+}
 
 /*
  * A guest_memfd instance can be associated multiple VMs, each with its own
@@ -38,6 +80,8 @@ struct gmem_inode {
 	struct inode vfs_inode;
 	struct list_head gmem_file_list;
 
+	struct guest_memfd_device device;
+	const struct guest_memfd_device_operations *device_ops;
 	void *provider;
 	const struct guest_memfd_provider_operations *provider_ops;
 
@@ -75,6 +119,10 @@ static inline void gmem_provider_invalidate_folio(struct gmem_inode *gi,
 
 static inline void gmem_provider_release(struct gmem_inode *gi)
 {
+	if (gi->device_ops) {
+		gi->device_ops->release(gi->provider);
+		kvm_put_kvm(gi->device.kvm);
+	}
 	if (gi->provider_ops && gi->provider_ops->release)
 		gi->provider_ops->release(gi->provider);
 }
@@ -189,6 +237,9 @@ static struct folio *kvm_gmem_get_folio(struct inode *inode, pgoff_t index)
 	struct mempolicy *policy;
 	struct folio *folio;
 
+	if (gi->device_ops)
+		return ERR_PTR(-EOPNOTSUPP);
+
 	/*
 	 * Fast-path: See if folio is already present in mapping to avoid
 	 * policy_lookup.
@@ -237,6 +288,8 @@ static struct folio *kvm_gmem_get_folio(struct inode *inode, pgoff_t index)
 
 static enum kvm_gfn_range_filter kvm_gmem_get_all_gfns_filter(struct inode *inode)
 {
+	if (GMEM_I(inode)->device_ops)
+		return KVM_FILTER_SHARED;
 	if (gmem_in_place_conversion)
 		return KVM_FILTER_SHARED | KVM_FILTER_PRIVATE;
 
@@ -393,6 +446,9 @@ static long kvm_gmem_fallocate(struct file *file, int mode, loff_t offset,
 {
 	int ret;
 
+	if (GMEM_I(file_inode(file))->device_ops)
+		return -EOPNOTSUPP;
+
 	if (!(mode & FALLOC_FL_KEEP_SIZE))
 		return -EOPNOTSUPP;
 
@@ -436,8 +492,9 @@ static int kvm_gmem_release(struct inode *inode, struct file *file)
 
 	filemap_invalidate_lock(inode->i_mapping);
 
-	xa_for_each(&f->bindings, index, slot)
+	xa_for_each(&f->bindings, index, slot) {
 		WRITE_ONCE(slot->gmem.file, NULL);
+	}
 
 	/*
 	 * All in-flight operations are gone and new bindings can be created.
@@ -477,6 +534,8 @@ DEFINE_CLASS(gmem_get_file, struct file *, if (_T) fput(_T),
 
 static bool kvm_gmem_supports_mmap(struct inode *inode)
 {
+	if (GMEM_I(inode)->device_ops)
+		return false;
 	return GMEM_I(inode)->flags & GUEST_MEMFD_FLAG_MMAP;
 }
 
@@ -732,6 +791,9 @@ static int __kvm_gmem_set_attributes(struct inode *inode, pgoff_t start,
 	struct maple_tree *mt;
 	struct ma_state mas;
 	int r = 0;
+
+	if (gi->device_ops)
+		return -EOPNOTSUPP;
 
 	mt = &gi->attributes;
 
@@ -1007,7 +1069,18 @@ static int kvm_gmem_init_inode(struct inode *inode, loff_t size, u64 flags)
 	return r;
 }
 
-static int kvm_gmem_attach_resource(struct inode *inode, int resource_fd)
+bool __weak kvm_arch_gmem_device_supported(struct kvm *kvm)
+{
+	return false;
+}
+
+void __weak kvm_arch_gmem_device_bind(struct kvm_memory_slot *slot,
+		const struct guest_memfd_device_binding *binding)
+{
+}
+
+static int kvm_gmem_attach_resource(struct kvm *kvm,
+		struct inode *inode, int resource_fd)
 {
 	struct file *resource_file;
 	struct inode *res_inode;
@@ -1017,6 +1090,39 @@ static int kvm_gmem_attach_resource(struct inode *inode, int resource_fd)
 	resource_file = fget_raw(resource_fd);
 	if (!resource_file)
 		return -EBADF;
+
+	if (GMEM_I(inode)->flags & GUEST_MEMFD_FLAG_DEVICE) {
+		struct gmem_inode *gi = GMEM_I(inode);
+		const struct guest_memfd_device_operations *dev_ops;
+
+		dev_ops = kvm_gmem_device_ops(resource_file);
+		if (!dev_ops || !dev_ops->attach) {
+			fput(resource_file);
+			return -EOPNOTSUPP;
+		}
+
+		if (!kvm_arch_gmem_device_supported(kvm)) {
+			fput(resource_file);
+			return -EOPNOTSUPP;
+		}
+
+		if (!(gi->flags & GUEST_MEMFD_FLAG_INIT_SHARED) ||
+		    (gi->flags & GUEST_MEMFD_FLAG_MMAP)) {
+			fput(resource_file);
+			return -EOPNOTSUPP;
+		}
+
+		gi->device.kvm = kvm;
+		gi->device.size = i_size_read(inode);
+		provider = dev_ops->attach(resource_file, &gi->device);
+		fput(resource_file);
+		if (IS_ERR(provider))
+			return PTR_ERR(provider);
+		kvm_get_kvm(kvm);
+		gi->provider = provider;
+		gi->device_ops = dev_ops;
+		return 0;
+	}
 
 	res_inode = file_inode(resource_file);
 	ops = res_inode->i_sb->s_op->gmem_provider_ops;
@@ -1072,7 +1178,7 @@ static int __kvm_gmem_create(struct kvm *kvm, loff_t size, u64 flags, int resour
 		goto err_inode;
 
 	if (flags & GUEST_MEMFD_FLAG_USE_RESOURCE) {
-		err = kvm_gmem_attach_resource(inode, resource_fd);
+		err = kvm_gmem_attach_resource(kvm, inode, resource_fd);
 		if (err)
 			goto err_inode;
 	}
@@ -1091,6 +1197,7 @@ static int __kvm_gmem_create(struct kvm *kvm, loff_t size, u64 flags, int resour
 	xa_init(&f->bindings);
 	list_add(&f->entry, &GMEM_I(inode)->gmem_file_list);
 
+	WRITE_ONCE(GMEM_I(inode)->device.core, file);
 	fd_install(fd, file);
 	return fd;
 
@@ -1118,6 +1225,9 @@ int kvm_gmem_create(struct kvm *kvm, struct kvm_create_guest_memfd *args)
 
 	if (!(flags & GUEST_MEMFD_FLAG_USE_RESOURCE) && args->resource_fd)
 		return -EINVAL;
+	if ((flags & GUEST_MEMFD_FLAG_DEVICE) &&
+	    !(flags & GUEST_MEMFD_FLAG_USE_RESOURCE))
+		return -EINVAL;
 
 	return __kvm_gmem_create(kvm, size, flags, args->resource_fd);
 }
@@ -1125,6 +1235,7 @@ int kvm_gmem_create(struct kvm *kvm, struct kvm_create_guest_memfd *args)
 int kvm_gmem_bind(struct kvm *kvm, struct kvm_memory_slot *slot,
 		  unsigned int fd, uoff_t offset)
 {
+	struct guest_memfd_device_binding binding = {};
 	uoff_t size = slot->npages << PAGE_SHIFT;
 	unsigned long start, end;
 	struct gmem_file *f;
@@ -1140,16 +1251,16 @@ int kvm_gmem_bind(struct kvm *kvm, struct kvm_memory_slot *slot,
 		return -EBADF;
 
 	if (file->f_op != &kvm_gmem_fops)
-		goto err;
+		goto out_put;
 
 	f = file->private_data;
 	if (f->kvm != kvm)
-		goto err;
+		goto out_put;
 
 	inode = file_inode(file);
 
 	if (!PAGE_ALIGNED(offset) || offset + size > i_size_read(inode))
-		goto err;
+		goto out_put;
 
 	filemap_invalidate_lock(inode->i_mapping);
 
@@ -1159,9 +1270,23 @@ int kvm_gmem_bind(struct kvm *kvm, struct kvm_memory_slot *slot,
 	if (!xa_empty(&f->bindings) &&
 	    xa_find(&f->bindings, &start, end - 1, XA_PRESENT)) {
 		r = -EEXIST;
-		filemap_invalidate_unlock(inode->i_mapping);
-		goto err;
+		goto out_unlock;
 	}
+
+	if (GMEM_I(inode)->device_ops) {
+		if (slot->flags & (KVM_MEM_LOG_DIRTY_PAGES | KVM_MEM_READONLY)) {
+			r = -EINVAL;
+			goto out_unlock;
+		}
+		r = GMEM_I(inode)->device_ops->bind(GMEM_I(inode)->provider, offset,
+						   size, &binding);
+		if (r)
+			goto out_unlock;
+		slot->flags |= KVM_MEMSLOT_GMEM_ONLY | KVM_MEMSLOT_GMEM_DEVICE;
+	}
+	r = xa_err(xa_store_range(&f->bindings, start, end - 1, slot, GFP_KERNEL));
+	if (r)
+		goto out_unlock;
 
 	/*
 	 * memslots of flag KVM_MEM_GUEST_MEMFD are immutable to change, so
@@ -1170,19 +1295,20 @@ int kvm_gmem_bind(struct kvm *kvm, struct kvm_memory_slot *slot,
 	 */
 	WRITE_ONCE(slot->gmem.file, file);
 	slot->gmem.pgoff = start;
+	if (slot->flags & KVM_MEMSLOT_GMEM_DEVICE)
+		kvm_arch_gmem_device_bind(slot, &binding);
 	if (gmem_in_place_conversion || kvm_gmem_supports_mmap(inode))
 		slot->flags |= KVM_MEMSLOT_GMEM_ONLY;
 
-	xa_store_range(&f->bindings, start, end - 1, slot, GFP_KERNEL);
+	r = 0;
+out_unlock:
 	filemap_invalidate_unlock(inode->i_mapping);
-
+out_put:
 	/*
 	 * Drop the reference to the file, even on success.  The file pins KVM,
 	 * not the other way 'round.  Active bindings are invalidated if the
 	 * file is closed before memslots are destroyed.
 	 */
-	r = 0;
-err:
 	fput(file);
 	return r;
 }
@@ -1288,6 +1414,21 @@ int kvm_gmem_get_pfn(struct kvm *kvm, struct kvm_memory_slot *slot,
 		return -EFAULT;
 
 	filemap_invalidate_lock_shared(file_inode(file)->i_mapping);
+
+	if (GMEM_I(file_inode(file))->device_ops) {
+		struct gmem_inode *gi = GMEM_I(file_inode(file));
+		unsigned long device_pfn;
+
+		*max_order = 0;
+		if (kvm_gmem_is_private_mem(file_inode(file), index))
+			r = -EAGAIN;
+		else
+			r = gi->device_ops->get_pfn(gi->provider,
+						(u64)index << PAGE_SHIFT, &device_pfn);
+		if (!r)
+			*pfn = device_pfn;
+		goto out;
+	}
 
 	folio = __kvm_gmem_get_pfn(file, slot, index, pfn, max_order);
 	if (IS_ERR(folio)) {
@@ -1443,6 +1584,8 @@ static struct inode *kvm_gmem_alloc_inode(struct super_block *sb)
 	gi->flags = 0;
 	gi->provider = NULL;
 	gi->provider_ops = NULL;
+	gi->device_ops = NULL;
+	memset(&gi->device, 0, sizeof(gi->device));
 	INIT_LIST_HEAD(&gi->gmem_file_list);
 	return &gi->vfs_inode;
 }
