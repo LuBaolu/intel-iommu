@@ -11,6 +11,13 @@ struct mempolicy;
 struct kvm;
 struct guest_memfd_device;
 
+/* Claims come from a pending architecture exit, never from a userspace PA. */
+struct guest_memfd_device_request {
+	u64 gpa;
+	u64 pa;
+	u64 vdev_id;
+};
+
 /* Binding data stays valid only while the device guest_memfd is active. */
 struct guest_memfd_device_binding {
 	/* Architecture-specific mapping owner, e.g. an RMM vDEVICE handle. */
@@ -29,6 +36,11 @@ struct guest_memfd_device_operations {
 	int (*bind)(void *data, u64 offset, u64 size,
 		struct guest_memfd_device_binding *binding);
 	int (*get_pfn)(void *data, u64 offset, unsigned long *pfn);
+	/* A protected request prepares private mapping; NULL prepares sharing. */
+	int (*prepare_conversion)(struct guest_memfd_device_context *context,
+		const struct guest_memfd_device_request *req);
+	void (*finish_conversion)(struct guest_memfd_device_context *context,
+		const struct guest_memfd_device_request *req);
 	void (*release)(void *data);
 };
 
