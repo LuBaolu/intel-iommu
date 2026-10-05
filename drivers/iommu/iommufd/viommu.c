@@ -250,6 +250,7 @@ int iommufd_vdevice_alloc_ioctl(struct iommufd_ucmd *ucmd)
 		goto out_unlock_igroup;
 	}
 
+	mutex_init(&vdev->mmio_lock);
 	vdev->virt_id = virt_id;
 	vdev->viommu = viommu;
 	refcount_inc(&viommu->obj.users);
@@ -487,3 +488,92 @@ out_put_viommu:
 	iommufd_put_object(ucmd->ictx, &viommu->obj);
 	return rc;
 }
+
+struct iommufd_vdevice *
+iommufd_device_attach_mmio_provider(struct iommufd_device *idev,
+		struct kvm *kvm, void *data,
+		void (*invalidate_mmio)(void *),
+		bool (*has_private_mmio)(void *),
+		unsigned long *owner)
+{
+	struct iommufd_vdevice *vdev;
+	int ret;
+
+	if (!idev)
+		return ERR_PTR(-ENODEV);
+
+	guard(mutex)(&idev->igroup->lock);
+	if (idev->destroying)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	vdev = idev->vdev;
+	if (!vdev)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	if (!vdev->viommu->ops ||
+	    !vdev->viommu->ops->vdevice_get_mmio_owner)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	guard(mutex)(&vdev->mmio_lock);
+	if (vdev->mmio_provider_data)
+		return ERR_PTR(-EBUSY);
+
+	ret = vdev->viommu->ops->vdevice_get_mmio_owner(vdev, kvm, owner);
+	if (ret)
+		return ERR_PTR(ret);
+
+	/* IOMMU_DESTROY must wait for the attached gmem provider to detach. */
+	ret = iommufd_try_inc_users(idev->ictx, &vdev->obj);
+	if (ret)
+		return ERR_PTR(ret);
+
+	iommufd_ctx_get(idev->ictx);
+	vdev->mmio_provider_data = data;
+	vdev->invalidate_mmio = invalidate_mmio;
+	vdev->has_private_mmio = has_private_mmio;
+	invalidate_mmio(data);
+	return vdev;
+}
+EXPORT_SYMBOL_NS_GPL(iommufd_device_attach_mmio_provider, "IOMMUFD");
+
+void iommufd_vdevice_detach_mmio_provider(struct iommufd_vdevice *vdev)
+{
+	struct iommufd_ctx *ictx = vdev->viommu->ictx;
+
+	scoped_guard(mutex, &vdev->mmio_lock) {
+		WARN_ON(iommufd_vdevice_has_private_mmio(vdev));
+		vdev->mmio_provider_data = NULL;
+		vdev->invalidate_mmio = NULL;
+		vdev->has_private_mmio = NULL;
+	}
+	refcount_dec(&vdev->obj.users);
+	iommufd_ctx_put(ictx);
+}
+EXPORT_SYMBOL_NS_GPL(iommufd_vdevice_detach_mmio_provider, "IOMMUFD");
+
+void iommufd_vdevice_mmio_lock(struct iommufd_vdevice *vdev)
+{
+	mutex_lock(&vdev->mmio_lock);
+}
+EXPORT_SYMBOL_NS_GPL(iommufd_vdevice_mmio_lock, "IOMMUFD");
+
+void iommufd_vdevice_mmio_unlock(struct iommufd_vdevice *vdev)
+{
+	mutex_unlock(&vdev->mmio_lock);
+}
+EXPORT_SYMBOL_NS_GPL(iommufd_vdevice_mmio_unlock, "IOMMUFD");
+
+/**
+ * iommufd_vdevice_has_private_mmio() - check for private MMIO ranges
+ * @vdev: vDEVICE whose private MMIO state is being checked
+ *
+ * Return: true if the attached provider has committed private ranges.
+ */
+bool iommufd_vdevice_has_private_mmio(struct iommufd_vdevice *vdev)
+{
+	lockdep_assert_held(&vdev->mmio_lock);
+	if (!vdev->has_private_mmio)
+		return false;
+	return vdev->has_private_mmio(vdev->mmio_provider_data);
+}
+EXPORT_SYMBOL_NS_GPL(iommufd_vdevice_has_private_mmio, "IOMMUFD");
