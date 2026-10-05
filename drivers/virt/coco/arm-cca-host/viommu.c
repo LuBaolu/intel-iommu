@@ -14,6 +14,7 @@
 #include <linux/mutex.h>
 #include <linux/pci-tsm.h>
 #include <linux/slab.h>
+#include <linux/stddef.h>
 #include <linux/tsm.h>
 #include <linux/uaccess.h>
 
@@ -256,34 +257,63 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 				   struct tsm_guest_req_info *info,
 				   u64 *tsm_code)
 {
+	union {
+		struct arm64_vdev_set_tdi_state_guest_req state;
+		struct arm64_vdev_object_size_guest_req size;
+		struct arm64_vdev_object_read_guest_req read;
+		struct arm64_vdev_object_regen_guest_req regen;
+	} req;
+	u8 nonce[sizeof_field(struct rmi_vdev_measurement_params, nonce)];
 	struct cca_vdevice *cca_vdev =
 		container_of(vdev, struct cca_vdevice, core);
 	struct cca_host_tdi *host_tdi = &cca_vdev->host_tdi;
 	struct pci_tsm_context *context = cca_vdev->tsm_context;
 	struct pci_tsm_pf0 *pf0;
 	struct pci_dev *pdev;
+	size_t req_len;
+	int ret;
 
 	(void)tsm_code;
 	if (!context)
 		return -EOPNOTSUPP;
 
+	switch (info->op) {
+	case TSM_REQ_SET_TDI_STATE:
+		req_len = sizeof(req.state);
+		break;
+	case TSM_REQ_OBJECT_INFO:
+		req_len = sizeof(req.size);
+		break;
+	case TSM_REQ_READ_OBJECT:
+		req_len = sizeof(req.read);
+		break;
+	case TSM_REQ_REGEN_OBJECT:
+		req_len = sizeof(req.regen);
+		break;
+	default:
+		return -EINVAL;
+	}
+	if (info->req_len != req_len)
+		return -EINVAL;
+	if (copy_from_user(&req, info->req, req_len))
+		return -EFAULT;
+	if (info->op == TSM_REQ_REGEN_OBJECT &&
+	    req.regen.object_type == RHI_DA_OBJECT_MEASUREMENT &&
+	    copy_from_user(nonce, u64_to_user_ptr(req.regen.nonce),
+			   sizeof(nonce)))
+		return -EFAULT;
+
 	pdev = to_pci_dev(iommufd_vdevice_to_device(vdev));
 	pf0 = pci_tsm_context_pf0(context);
-	guard(mutex)(&pf0->lock);
-	if (pf0->removing && info->op != TSM_REQ_SET_TDI_STATE)
-		return -ENODEV;
 	switch (info->op) {
 	case TSM_REQ_SET_TDI_STATE: {
-		struct arm64_vdev_set_tdi_state_guest_req req;
+		/* Serialize CCA backend state operations and PF0 removal. */
+		guard(mutex)(&pf0->lock);
 
-		if (info->req_len != sizeof(req))
-			return -EINVAL;
-		if (copy_from_user(&req, info->req, sizeof(req)))
-			return -EFAULT;
-		if (pf0->removing && req.tdi_state !=
+		if (pf0->removing && req.state.tdi_state !=
 		    RHI_DA_TDI_CONFIG_UNLOCKED)
 			return -ENODEV;
-		switch (req.tdi_state) {
+		switch (req.state.tdi_state) {
 		case RHI_DA_TDI_CONFIG_UNLOCKED:
 			return cca_vdev_device_unlock(host_tdi, pdev);
 		case RHI_DA_TDI_CONFIG_LOCKED:
@@ -294,59 +324,47 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 			return -EINVAL;
 		}
 	}
-	case TSM_REQ_OBJECT_INFO: {
-		struct arm64_vdev_object_size_guest_req req;
-		int object_size;
-
-		if (info->req_len != sizeof(req))
-			return -EINVAL;
-		if (copy_from_user(&req, info->req, sizeof(req)))
-			return -EFAULT;
-		object_size = cca_vdev_get_object_size(host_tdi, pdev,
-						       req.object_type);
-		if (object_size <= 0)
-			return object_size;
-		if (info->resp_len < sizeof(object_size))
-			return -EINVAL;
-		if (copy_to_user(info->resp, &object_size, sizeof(object_size)))
-			return -EFAULT;
-		return info->resp_len - sizeof(object_size);
-	}
-	case TSM_REQ_READ_OBJECT: {
-		struct arm64_vdev_object_read_guest_req req;
-		int len;
-
-		if (info->req_len != sizeof(req))
-			return -EINVAL;
-		if (copy_from_user(&req, info->req, sizeof(req)))
-			return -EFAULT;
-		len = cca_vdev_read_cached_object(host_tdi, pdev,
-						  req.object_type, req.offset,
-						  info->resp_len,
-						  info->resp);
-		if (len <= 0)
-			return len;
-		return info->resp_len - len;
-	}
+	case TSM_REQ_OBJECT_INFO:
+	case TSM_REQ_READ_OBJECT:
+		/* The pinned PCI TSM context keeps the caches alive during removal. */
+		if (READ_ONCE(pf0->removing))
+			return -ENODEV;
+		if (info->op == TSM_REQ_OBJECT_INFO) {
+			ret = cca_vdev_get_object_size(host_tdi, pdev,
+						   req.size.object_type);
+			if (ret <= 0)
+				return ret;
+			if (info->resp_len < sizeof(ret))
+				return -EINVAL;
+			if (copy_to_user(info->resp, &ret, sizeof(ret)))
+				return -EFAULT;
+			return info->resp_len - sizeof(ret);
+		}
+		ret = cca_vdev_read_cached_object(host_tdi, pdev,
+						  req.read.object_type,
+						  req.read.offset,
+						  info->resp_len, info->resp);
+		return ret <= 0 ? ret : info->resp_len - ret;
 	case TSM_REQ_REGEN_OBJECT: {
-		struct arm64_vdev_object_regen_guest_req req;
+		/* Regeneration uses the PF0 backend but does not change MMIO state. */
+		guard(mutex)(&pf0->lock);
 
-		if (info->req_len != sizeof(req))
-			return -EINVAL;
-		if (copy_from_user(&req, info->req, sizeof(req)))
-			return -EFAULT;
-		if (req.object_type == RHI_DA_OBJECT_INTERFACE_REPORT)
+		if (pf0->removing)
+			return -ENODEV;
+		if (req.regen.object_type == RHI_DA_OBJECT_INTERFACE_REPORT)
 			return cca_vdev_update_interface_report(host_tdi, pdev);
-		if (req.object_type == RHI_DA_OBJECT_MEASUREMENT)
+		if (req.regen.object_type == RHI_DA_OBJECT_MEASUREMENT)
 			return cca_vdev_update_device_measurements(host_tdi, pdev,
-							   req.flags,
-							   (u8 *)req.nonce);
+							   req.regen.flags,
+							   nonce);
 		return -EINVAL;
 	}
 	default:
 		return -EINVAL;
 	}
+	return -EINVAL;
 }
+
 
 static const struct iommufd_viommu_ops cca_viommu_ops = {
 	.flags = IOMMUFD_VIOMMU_NO_HWPT,

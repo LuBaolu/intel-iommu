@@ -13,6 +13,9 @@
 #include <keys/x509-parser.h>
 #include <linux/kvm_types.h>
 #include <linux/kvm_host.h>
+#include <linux/pagemap.h>
+#include <linux/string.h>
+#include <linux/uaccess.h>
 #include <asm/kvm_rmi.h>
 
 #include "rmi-da.h"
@@ -1266,100 +1269,105 @@ int cca_vdev_device_lock(struct cca_host_tdi *host_tdi,
 						 RMI_VDEV_LOCKED);
 }
 
+static struct cache_object *cca_vdev_cached_object(struct cca_host_tdi *host_tdi,
+						    struct pci_dev *pdev, int type)
+{
+	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
+	struct cca_host_pdev_dsc *pdev_dsc;
+	struct pci_tsm *tsm = pdev->tsm;
+
+	if (!tsm)
+		return NULL;
+
+	pdev_dsc = to_cca_pdev_dsc(tsm->dsm_dev);
+	lockdep_assert_held(&pdev_dsc->object_lock);
+	pf0_ep_dsc = to_cca_pf0_ep_dsc(tsm->dsm_dev);
+
+	switch (type) {
+	case RHI_DA_OBJECT_INTERFACE_REPORT:
+		return host_tdi->interface_report;
+	case RHI_DA_OBJECT_MEASUREMENT:
+		return host_tdi->measurements;
+	case RHI_DA_OBJECT_CERTIFICATE:
+		return pf0_ep_dsc->cert_chain.cache;
+	case RHI_DA_OBJECT_VCA:
+		return pf0_ep_dsc->vca;
+	default:
+		return NULL;
+	}
+}
+
 int cca_vdev_get_object_size(struct cca_host_tdi *host_tdi,
 			     struct pci_dev *pdev, int type)
 {
-	long len;
-	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
-	struct pci_tsm *tsm = pdev->tsm;
 	struct cca_host_pdev_dsc *pdev_dsc;
+	struct cache_object *cache;
 
-	cca_vdev_assert_locked(pdev);
-
-	if (!tsm)
+	if (!pdev->tsm)
 		return -EINVAL;
+	pdev_dsc = to_cca_pdev_dsc(pdev->tsm->dsm_dev);
 
-	pdev_dsc = to_cca_pdev_dsc(tsm->dsm_dev);
-	pf0_ep_dsc = to_cca_pf0_ep_dsc(tsm->dsm_dev);
-
+	/* The PCI TSM context pins the cache owner; object_lock protects its data. */
 	guard(mutex)(&pdev_dsc->object_lock);
-	/* Determine the buffer that should be used */
-	if (type == RHI_DA_OBJECT_INTERFACE_REPORT) {
-		if (!host_tdi->interface_report)
-			return -EINVAL;
-		len = host_tdi->interface_report->offset;
-	} else if (type == RHI_DA_OBJECT_MEASUREMENT) {
-		if (!host_tdi->measurements)
-			return -EINVAL;
-		len = host_tdi->measurements->offset;
-	} else if (type == RHI_DA_OBJECT_CERTIFICATE) {
-		if (!pf0_ep_dsc->cert_chain.cache)
-			return -EINVAL;
-		len = pf0_ep_dsc->cert_chain.cache->offset;
-	} else if (type == RHI_DA_OBJECT_VCA) {
-		if (!pf0_ep_dsc->vca)
-			return -EINVAL;
-		len = pf0_ep_dsc->vca->offset;
-	} else {
+	cache = cca_vdev_cached_object(host_tdi, pdev, type);
+	if (!cache)
 		return -EINVAL;
-	}
 
-	return len;
+	return cache->offset;
 }
 
+/**
+ * cca_vdev_read_cached_object() - copy a cached object directly to userspace
+ * @host_tdi: Realm device whose report or measurements may be read
+ * @pdev: PCI function associated with the cache
+ * @type: object type
+ * @offset: byte offset within the object
+ * @max_len: size of the userspace response buffer
+ * @user_buf: userspace response buffer
+ *
+ * The PCI TSM context pins the cache owner. Prefault the userspace buffer
+ * outside object_lock, then use a nofault copy while object_lock keeps the
+ * cache stable against regeneration and reallocation. Recheck the length
+ * after prefaulting because regeneration can change it in the meantime.
+ *
+ * Return: number of bytes copied, or a negative error.
+ */
 int cca_vdev_read_cached_object(struct cca_host_tdi *host_tdi,
 				struct pci_dev *pdev, int type,
 				unsigned long offset, unsigned long max_len,
 				void __user *user_buf)
 {
-	void *buf;
 	unsigned long len;
-	struct cca_host_pf0_ep_dsc *pf0_ep_dsc;
-	struct pci_tsm *tsm = pdev->tsm;
+	unsigned long prefaulted = 0;
 	struct cca_host_pdev_dsc *pdev_dsc;
+	struct cache_object *cache;
 
-	cca_vdev_assert_locked(pdev);
-
-	if (!tsm)
+	if (!pdev->tsm)
 		return -EINVAL;
+	pdev_dsc = to_cca_pdev_dsc(pdev->tsm->dsm_dev);
 
-	pdev_dsc = to_cca_pdev_dsc(tsm->dsm_dev);
-	pf0_ep_dsc = to_cca_pf0_ep_dsc(tsm->dsm_dev);
-
-	guard(mutex)(&pdev_dsc->object_lock);
-	/* Determine the buffer that should be used */
-	if (type == RHI_DA_OBJECT_INTERFACE_REPORT) {
-		if (!host_tdi->interface_report)
-			return -EINVAL;
-		len = host_tdi->interface_report->offset;
-		buf = host_tdi->interface_report->buf;
-	} else if (type == RHI_DA_OBJECT_MEASUREMENT) {
-		if (!host_tdi->measurements)
-			return -EINVAL;
-		len = host_tdi->measurements->offset;
-		buf = host_tdi->measurements->buf;
-	} else if (type == RHI_DA_OBJECT_CERTIFICATE) {
-		if (!pf0_ep_dsc->cert_chain.cache)
-			return -EINVAL;
-		len = pf0_ep_dsc->cert_chain.cache->offset;
-		buf = pf0_ep_dsc->cert_chain.cache->buf;
-	} else if (type == RHI_DA_OBJECT_VCA) {
-		if (!pf0_ep_dsc->vca)
-			return -EINVAL;
-		len = pf0_ep_dsc->vca->offset;
-		buf = pf0_ep_dsc->vca->buf;
-	} else {
-		return -EINVAL;
+	for (;;) {
+		{
+			guard(mutex)(&pdev_dsc->object_lock);
+			cache = cca_vdev_cached_object(host_tdi, pdev, type);
+			if (!cache || offset > cache->offset)
+				return -EINVAL;
+			len = cache->offset - offset;
+			if (max_len < len)
+				return -E2BIG;
+			if (!len)
+				return 0;
+			if (len <= prefaulted) {
+				if (copy_to_user_nofault(user_buf, cache->buf + offset,
+							 len))
+					return -EFAULT;
+				return len;
+			}
+		}
+		if (fault_in_safe_writeable(user_buf, len))
+			return -EFAULT;
+		prefaulted = len;
 	}
-
-	/* Assume that the buffer is large enough for the whole report */
-	if (max_len < len)
-		return -E2BIG;
-
-	if (copy_to_user(user_buf, buf + offset, len))
-		return -EIO;
-
-	return len;
 }
 
 static int vdev_update_interface_report_cache(struct cca_host_tdi *host_tdi,
@@ -1456,7 +1464,7 @@ DEFINE_FREE(measurement_param_free, struct rmi_vdev_measurement_params *,
 
 int cca_vdev_update_device_measurements(struct cca_host_tdi *host_tdi,
 					struct pci_dev *pdev,
-					unsigned long flags, u8 *nonce)
+					unsigned long flags, const u8 *nonce)
 {
 	struct realm *realm;
 	phys_addr_t rd_phys;
@@ -1480,8 +1488,7 @@ int cca_vdev_update_device_measurements(struct cca_host_tdi *host_tdi,
 
 	params->flags = flags;
 
-	if (copy_from_user(params->nonce, nonce, sizeof(params->nonce)))
-		return -EFAULT;
+	memcpy(params->nonce, nonce, sizeof(params->nonce));
 
 	if (rmi_vdev_get_device_measurements(rd_phys, rmm_pdev_phys,
 					     rmm_vdev_phys, virt_to_phys(params)))
