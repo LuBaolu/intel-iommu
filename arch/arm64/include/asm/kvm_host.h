@@ -278,6 +278,11 @@ struct kvm_s2_mmu {
 };
 
 struct kvm_arch_memory_slot {
+	/* The RMM handle is usable only while device guest_memfd is active. */
+	struct {
+		unsigned long rmm_vdev;
+		u64 vdev_id;
+	} device;
 };
 
 /**

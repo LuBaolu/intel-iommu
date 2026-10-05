@@ -316,9 +316,11 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 			return -ENODEV;
 		switch (req.state.tdi_state) {
 		case RHI_DA_TDI_CONFIG_UNLOCKED: {
-			/* Serialize UNLOCK with device MMIO conversion. */
+			/* Keep the private-range check and UNLOCK atomic with conversion. */
 			guard(mutex)(&vdev->mmio_lock);
 
+			if (iommufd_vdevice_has_private_mmio(vdev))
+				return -EBUSY;
 			return cca_vdev_device_unlock(host_tdi, pdev);
 		}
 		case RHI_DA_TDI_CONFIG_LOCKED:

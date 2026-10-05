@@ -177,5 +177,10 @@ static inline bool kvm_realm_ext_allowed(long ext)
 	return false;
 }
 
+int realm_dev_mem_map(struct kvm *kvm, unsigned long vdev_phys,
+		      unsigned long start_ipa, unsigned long end_ipa,
+		      unsigned long start_pa);
+int realm_dev_mem_unmap_range(struct kvm *kvm,
+			    unsigned long start, unsigned long end);
 
 #endif /* __ASM_KVM_RMI_H */
