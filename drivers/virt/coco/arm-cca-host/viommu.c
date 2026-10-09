@@ -146,14 +146,6 @@ static void cca_psmmu_destroy_l2(struct cca_psmmu *psmmu, u32 l2_sid,
 	dev_warn(dev, "failed to destroy Realm stream mapping\n");
 }
 
-static int cca_vdevice_unmap(struct cca_vdevice *cca_vdev)
-{
-	struct cca_host_tdi *host_tdi = &cca_vdev->host_tdi;
-
-	return realm_dev_mem_unmap(host_tdi->kvm,
-				   virt_to_phys(host_tdi->rmm_vdev));
-}
-
 static void cca_vdevice_destroy(struct iommufd_vdevice *vdev)
 {
 	struct cca_vdevice *cca_vdev =
@@ -242,8 +234,7 @@ static int cca_vdevice_init(struct iommufd_vdevice *vdev)
 		goto out_put_context;
 	cca_vdev->tsm_context = context;
 	vdev->tsm_tvm_arch = IOMMU_VDEVICE_TSM_TVM_ARCH_CCA;
-	vdev->tsm_req_op_mask = BIT_ULL(TSM_REQ_VALIDATE_MMIO) |
-				BIT_ULL(TSM_REQ_SET_TDI_STATE) |
+	vdev->tsm_req_op_mask = BIT_ULL(TSM_REQ_SET_TDI_STATE) |
 				BIT_ULL(TSM_REQ_OBJECT_INFO) |
 				BIT_ULL(TSM_REQ_READ_OBJECT) |
 				BIT_ULL(TSM_REQ_REGEN_OBJECT);
@@ -282,19 +273,8 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 	if (pf0->removing && info->op != TSM_REQ_SET_TDI_STATE)
 		return -ENODEV;
 	switch (info->op) {
-	case TSM_REQ_VALIDATE_MMIO: {
-		struct arm64_vdev_validate_mmio_guest_req req;
-
-		if (info->req_len != sizeof(req))
-			return -EINVAL;
-		if (copy_from_user(&req, info->req, sizeof(req)))
-			return -EFAULT;
-		return cca_vdev_device_map(host_tdi, pdev, req.gpa_base,
-					  req.gpa_top, req.pa_base);
-	}
 	case TSM_REQ_SET_TDI_STATE: {
 		struct arm64_vdev_set_tdi_state_guest_req req;
-		int ret;
 
 		if (info->req_len != sizeof(req))
 			return -EINVAL;
@@ -305,9 +285,6 @@ static ssize_t cca_vdevice_tsm_req(struct iommufd_vdevice *vdev,
 			return -ENODEV;
 		switch (req.tdi_state) {
 		case RHI_DA_TDI_CONFIG_UNLOCKED:
-			ret = cca_vdevice_unmap(cca_vdev);
-			if (ret)
-				return ret;
 			return cca_vdev_device_unlock(host_tdi, pdev);
 		case RHI_DA_TDI_CONFIG_LOCKED:
 			return cca_vdev_device_lock(host_tdi, pdev);

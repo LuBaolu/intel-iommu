@@ -140,8 +140,6 @@ struct cca_host_tdi {
 	struct kvm *kvm;
 	struct realm *realm;
 	void *rmm_vdev;
-	/* Protected by the PCI TSM PF0 lock. */
-	enum rmi_vdev_state state;
 	/* protected by cca_host_pdev_dsc.object_lock */
 	struct cache_object *interface_report;
 	struct cache_object *measurements;
@@ -251,9 +249,6 @@ int cca_pdev_purge_stream_key(struct pci_dev *pdev1,
 		struct pci_dev *pdev2, unsigned long stream_handle);
 void cca_vdev_destroy(struct cca_host_tdi *host_tdi, struct realm *realm,
 		      struct pci_dev *pdev, struct pci_dev *pf0_dev);
-int cca_vdev_device_map(struct cca_host_tdi *host_tdi, struct pci_dev *pdev,
-			unsigned long gpa_base, unsigned long gpa_top,
-			unsigned long pa_base);
 int cca_vdev_device_start(struct cca_host_tdi *host_tdi, struct pci_dev *pdev);
 int cca_vdev_device_lock(struct cca_host_tdi *host_tdi, struct pci_dev *pdev);
 int cca_vdev_device_unlock(struct cca_host_tdi *host_tdi, struct pci_dev *pdev);
