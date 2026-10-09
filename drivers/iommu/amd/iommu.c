@@ -1076,9 +1076,6 @@ static void iommu_poll_ga_log(struct amd_iommu *iommu)
 {
 	u32 head, tail;
 
-	if (iommu->ga_log == NULL)
-		return;
-
 	head = readl(iommu->mmio_base + MMIO_GA_HEAD_OFFSET);
 	tail = readl(iommu->mmio_base + MMIO_GA_TAIL_OFFSET);
 
@@ -3214,8 +3211,7 @@ const struct iommu_ops amd_iommu_ops = {
 	.is_attach_deferred = amd_iommu_is_attach_deferred,
 	.def_domain_type = amd_iommu_def_domain_type,
 	.page_response = amd_iommu_page_response,
-	.get_viommu_size = amd_iommufd_get_viommu_size,
-	.viommu_init = amd_iommufd_viommu_init,
+	.get_viommu_ops = amd_iommufd_get_viommu_ops,
 };
 
 #ifdef CONFIG_IRQ_REMAP
@@ -3975,9 +3971,6 @@ static int irq_remapping_select(struct irq_domain *d, struct irq_fwspec *fwspec,
 {
 	struct amd_iommu *iommu;
 	int devid = -1;
-
-	if (!amd_iommu_irq_remap)
-		return 0;
 
 	if (x86_fwspec_is_ioapic(fwspec))
 		devid = get_ioapic_devid(fwspec->param[0]);

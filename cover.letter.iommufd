@@ -1,0 +1,111 @@
+iommufd: vIOMMUs and TSM guest requests for confidential guests
+
+This series adds IOMMUFD and PCI/TSM infrastructure for assigning PCI
+devices to confidential guests. It includes the IOMMU_VDEVICE_TSM_REQ
+ioctl. The Arm CCA host backend is supplied in a separate series; this
+series provides the interfaces it uses.
+
+Physical IOMMU drivers and PCI TSM backends now provide vIOMMU ops before
+IOMMUFD validates the parent HWPT. These ops provide callbacks for
+determining the allocation size and initializing the vIOMMU, along with
+flags specifying whether a parent HWPT is required. A nesting parent is
+required by default. When the selected ops set IOMMUFD_VIOMMU_NO_HWPT,
+userspace must supply a zero hwpt_id, and IOMMUFD passes NULL as the parent
+domain to the initialization callback. Nested HWPT and hardware queue
+allocation are rejected for a vIOMMU without a parent.
+
+IOMMUFD first queries the TSM attached to the selected PCI device. Lookup
+pins the backend module before using its vIOMMU ops, and that
+reference is released after the backend's vIOMMU destruction callback.
+The backend must keep its TSM registered while the module is pinned.
+When no TSM provides ops for the requested type, IOMMUFD falls back
+to the physical IOMMU driver. An error from TSM lookup or querying its ops is
+returned without falling back.
+
+Vdevice contexts replace the legacy PCI/TSM bind and unbind interface.
+Context acquisition verifies that the device's current TSM matches the
+vIOMMU's TSM. An explicit sysfs disconnect returns EBUSY while contexts
+remain active. Guest requests are dispatched through the vIOMMU ops.
+
+IOMMU_VDEVICE_TSM_REQ checks the guest architecture and the vdevice's
+supported-operation mask before forwarding userspace buffers to the
+backend. Request and response lengths are limited to INT_MAX so a
+successful residue fits in the ioctl return value. The backend supplies
+the architecture-specific request handling and TSM result code.
+
+Notes:
+* Codex was used to assist with commit message formatting and code
+  rearrangement.
+* This series also includes patches from the following series to provide
+  the dependencies needed for Sashiko to review the combined changes:
+  https://lore.kernel.org/all/20260928-vfio-v4-0-e32e226d5932@linux.ibm.com
+
+Changes from v6:
+https://lore.kernel.org/all/20260917140159.1163281-1-aneesh.kumar@kernel.org
+* Replace the IOMMUFD provider registry with per-device TSM operation lookup.
+* Move vIOMMU allocation size and initialization into the selected vIOMMU ops.
+* Select parent HWPT policy from the vIOMMU ops flags.
+* Pin a vIOMMU's TSM backend module through vIOMMU destruction.
+
+Changes from v5:
+https://lore.kernel.org/all/20260525154816.1029642-1-aneesh.kumar@kernel.org
+* Replace the TSM bind/unbind interface with reference-counted contexts.
+* Add the IOMMUFD vIOMMU provider abstraction.
+* Route TSM guest requests through vIOMMU ops.
+
+Changes from v4:
+https://lore.kernel.org/all/20260427061005.901854-1-aneesh.kumar@kernel.org
+* Switch VFIO/iommufd to use struct file *kvm_file instead of relying on
+  kvm->users_count references.
+* Define TSM request scope values globally in iommufd.
+* Rename the ioctl to IOMMU_VDEVICE_TSM_REQ.
+* Address other review feedback.
+
+Changes from v2:
+https://lore.kernel.org/all/20260309111704.2330479-1-aneesh.kumar@kernel.org
+* Bump the series revision to v4 to keep it in sync with the dependent CCA DA
+  patchsets. There was no v3 posting.
+* Drop [PATCH v2 1/3] iommufd/viommu: Allow associating a KVM VM fd with a
+  vIOMMU
+* Add two new patches to associate a struct kvm * with iommufd objects:
+  iommufd/device: Associate a kvm pointer to iommufd_device
+  iommufd/viommu: Associate a kvm pointer to iommufd_viommu
+* Address review feedback
+
+Changes from v1:
+https://lore.kernel.org/all/20250728135216.48084-8-aneesh.kumar@kernel.org
+* Rebase onto the latest kernel
+* Address review feedback
+* Drop the TSM map ioctl; the KVM prefault patch will be used instead to
+  ensure that private memory is preallocated
+
+
+Cc: Alex Williamson <alex@shazbot.org>
+Cc: Alexey Kardashevskiy <aik@amd.com>
+Cc: Bjorn Helgaas <bhelgaas@google.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com> 
+CC: Jacob Pan <jacob.pan@linux.microsoft.com> 
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Joerg Roedel <joro@8bytes.org>
+Cc: Jonathan Cameron <jic23@kernel.org>
+Cc: Jonathan Hunter <jonathanh@nvidia.com>
+Cc: Kevin Tian <kevin.tian@intel.com>
+Cc: Krishna Reddy <vdumpa@nvidia.com>
+Cc: Lukas Wunner <lukas@wunner.de>
+Cc: Nicolin Chen <nicolinc@nvidia.com>
+Cc: Robin Murphy <robin.murphy@arm.com>
+Cc: Samuel Ortiz <sameo@rivosinc.com>
+Cc: Shameer Kolothum <shameerali.kolothum.thodi@huawei.com>
+Cc: Steven Price <steven.price@arm.com>
+Cc: Suravee Suthikulpanit <suravee.suthikulpanit@amd.com>
+Cc: Suzuki K Poulose <suzuki.poulose@arm.com>
+Cc: Thierry Reding <thierry.reding@kernel.org>
+Cc: Vasant Hegde <vasant.hegde@amd.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Xu Yilun <yilun.xu@linux.intel.com>
+Cc: kvm@vger.kernel.org
+Cc: linux-arm-kernel@lists.infradead.org
+Cc: linux-coco@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-pci@vger.kernel.org
+Cc: linux-tegra@vger.kernel.org
