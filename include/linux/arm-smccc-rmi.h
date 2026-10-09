@@ -502,4 +502,256 @@ static_assert(sizeof(struct rec_run) == SZ_4K);
 #define RMI_S2AP_DIRECT_READ			BIT(1)
 #define RMI_S2AP_DIRECT_WRITE			BIT(0)
 
+enum rmi_pdev_state {
+	RMI_PDEV_NEW,
+	RMI_PDEV_NEEDS_KEY,
+	RMI_PDEV_HAS_KEY,
+	RMI_PDEV_READY,
+	RMI_PDEV_STOPPED,
+	RMI_PDEV_ERROR,
+};
+
+#define RMI_PDEV_FLAGS_SPDM		BIT(0)
+#define RMI_PDEV_FLAGS_CATEGORY_MASK	GENMASK(2, 1)
+#define RMI_PDEV_FLAGS_CATEGORY_SHIFT	1
+#define RMI_PDEV_FLAGS_P2P		BIT(3)
+
+#define RMI_PDEV_FLAGS_CATEGORY_ROOT_PORT	0x0
+#define RMI_PDEV_FLAGS_CATEGORY_OFF_CHIP_EP	0x1
+#define RMI_PDEV_FLAGS_CATEGORY_ON_CHIP_EP	0x2
+
+struct rmi_pdev_params {
+	union {
+		struct {
+			u64 flags;
+			u64 hb_base;
+			u64 pdev_id;
+			u64 routing_id;
+			u64 id_index;
+			union {
+				u32 rid_base;
+				u8 padding0[8];
+			};
+			union {
+				u32 rid_top;
+				u8 padding1[8];
+			};
+			union {
+				u8 hash_algo;
+				u8 padding2[8];
+			};
+		};
+		u8 padding3[0x1000];
+	};
+};
+
+#define RMI_DEV_COMM_EXIT_CACHE_REQ	BIT(0)
+#define RMI_DEV_COMM_EXIT_CACHE_RSP	BIT(1)
+#define RMI_DEV_COMM_EXIT_SEND		BIT(2)
+#define RMI_DEV_COMM_EXIT_WAIT		BIT(3)
+#define RMI_DEV_COMM_EXIT_RSP_RESET	BIT(4)
+#define RMI_DEV_COMM_EXIT_MULTI		BIT(5)
+#define RMI_DEV_COMM_EXIT_STREAM_WAIT	BIT(6)
+
+#define RMI_DEV_COMM_NONE	0
+#define RMI_DEV_COMM_RESPONSE	1
+#define RMI_DEV_COMM_ERROR	2
+
+#define RMI_PROTOCOL_SPDM		0
+#define RMI_PROTOCOL_SECURE_SPDM	1
+
+#define RMI_DEV_VCA			0
+#define RMI_DEV_CERTIFICATE		1
+#define RMI_DEV_MEASUREMENTS		2
+#define RMI_DEV_INTERFACE_REPORT	3
+
+struct rmi_dev_comm_enter {
+	union {
+		u8 status;
+		u64 padding0;
+	};
+	u64 req_addr;
+	u64 resp_addr;
+	u64 resp_len;
+	u8 padding1[0xe0];
+};
+
+struct rmi_dev_comm_exit {
+	u64 flags;
+	u64 req_cache_offset;
+	u64 req_cache_len;
+	u64 rsp_cache_offset;
+	u64 rsp_cache_len;
+	union {
+		u8 cache_object_id;
+		u8 padding0[0x8];
+	};
+
+	union {
+		u8 protocol;
+		u8 padding1[0x8];
+	};
+	u64 req_delay;
+	u64 req_len;
+	u64 rsp_timeout;
+	u8 padding2[0xb0];
+};
+
+struct rmi_dev_comm_data {
+	union { /* 0x0 */
+		struct rmi_dev_comm_enter enter;
+		u8 padding0[0x800];
+	};
+	union { /* 0x800 */
+		struct rmi_dev_comm_exit exit;
+		u8 padding1[0x800];
+	};
+};
+
+struct rmi_public_key_params {
+	union {
+		struct {
+			union { /* 0x0 */
+				u64 key_addr;
+				u8 padding0[0x400];
+			};
+			union { /* 0x400 */
+				u64 metadata_addr;
+				u8 padding1[0x400];
+			};
+			u64 key_len;
+			u64 metadata_len;
+		};
+		u8 padding[0x1000];
+	};
+};
+
+#define MAX_STREAM_ADDR_RANGE	16
+
+enum rmi_pdev_stream_type {
+	RMI_PDEV_STREAM_NON_TEE,
+	RMI_PDEV_STREAM_NCOH,
+	RMI_PDEV_STREAM_COH,
+	RMI_PDEV_STREAM_NCOH_SYS,
+	RMI_PDEV_STREAM_COH_SYS,
+};
+
+struct rmi_addr_range {
+	u64 base; /* inclusive */
+	u64 top;  /* exclusive */
+};
+
+struct rmi_pdev_stream_params {
+	union {
+		struct {
+			u64 flags;
+			union {
+				u8 stream_type;
+				u8 padding0[8];
+			};
+			u64 pdev_1;
+			u64 pdev_2;
+			u64 ide_sid;
+			u64 num_addr_range;
+		};
+		u8 padding1[0x100];
+	};
+
+	union { /* 0x100 */
+		struct rmi_addr_range addr_range[MAX_STREAM_ADDR_RANGE];
+		u8 padding2[0xF00];
+	};
+};
+
+#define RMI_PSMMU_IRQCFG_IRQ_DISABLED	0x0
+#define RMI_PSMMU_IRQCFG_IRQ_WIRED	0x1
+#define RMI_PSMMU_IRQCFG_IRQ_MSI	0x2
+#define RMI_PSMMU_IRQCFG_MASK		GENMASK(1, 0)
+#define RMI_PSMMU_CMDQSYNC_IRQ_WIRED	BIT(2)
+#define RMI_PSMMU_ATS			BIT(3)
+#define RMI_PSMMU_PRI			BIT(4)
+struct rmi_psmmu_info {
+	union {
+		struct {
+			u64 flags;
+			union {
+				u32 gerror_intr_num;
+				u8 padding0[8];
+			};
+			union {
+				u32 eventq_intr_num;
+				u8 padding1[8];
+			};
+			union {
+				u32 priq_intr_num;
+				u8 padding2[8];
+			};
+			union {
+				u32 cmdq_sync_intr_num;
+				u8 padding3[8];
+			};
+		};
+		u8 padding4[0x1000];
+	};
+};
+
+struct rmi_psmmu_params {
+	union {
+		struct {
+			u64 flags;
+			u64 gerr_addr;
+			u64 gerr_data;
+			u64 eventq_addr;
+			u64 eventq_data;
+			u64 priq_addr;
+			u64 priq_data;
+		};
+		u8 padding0[0x1000];
+	};
+};
+
+enum rmi_vdev_state {
+	RMI_VDEV_NEW,
+	RMI_VDEV_UNLOCKED,
+	RMI_VDEV_LOCKED,
+	RMI_VDEV_STARTED,
+	RMI_VDEV_ERROR,
+	RMI_VDEV_KEY_REFRESH,
+	RMI_VDEV_KEY_PURGE,
+};
+
+#define MAX_VDEV_ADDR_RANGE 8
+struct rmi_vdev_params {
+	union {
+		struct {
+			u64 flags;
+			u64 vdev_id;
+			u64 tdi_id;
+			u64 padding0;
+			u64 vsmmu_addr;
+			u64 vsid;
+			u64 num_addr_range;
+		};
+		u8 padding1[0x200];
+	};
+	union { /* 0x200 */
+		struct rmi_addr_range addr_range[MAX_VDEV_ADDR_RANGE];
+		u8 padding2[0x1000 - 0x200];
+	};
+};
+
+#define RMI_VDEV_MEASURE_HASH	0x0
+#define RMI_VDEV_MEASURE_RAW	0x1
+struct rmi_vdev_measurement_params {
+	union {
+		u64 flags;
+		u8 padding0[256];
+	};
+	union {
+		u8 nonce[32];
+		u8 padding1[256];
+	};
+	u8 padding2[0xe00];
+};
+
 #endif /* __LINUX_ARM_SMCCC_RMI_H_ */

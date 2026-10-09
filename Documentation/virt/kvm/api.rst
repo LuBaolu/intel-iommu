@@ -6544,7 +6544,7 @@ See KVM_SET_USER_MEMORY_REGION2 for additional details.
 ---------------------------
 
 :Capability: KVM_CAP_PRE_FAULT_MEMORY
-:Architectures: none
+:Architectures: x86, s390, arm64
 :Type: vcpu ioctl
 :Parameters: struct kvm_pre_fault_memory (in/out)
 :Returns: 0 if at least one page is processed, < 0 on error
@@ -6552,12 +6552,15 @@ See KVM_SET_USER_MEMORY_REGION2 for additional details.
 Errors:
 
   ========== ===============================================================
+  EAGAIN     A race occurred before progress was made, but a retry may succeed.
   EINVAL     The specified `gpa` and `size` were invalid (e.g. not
              page aligned, causes an overflow, or size is zero), or the VM
              is UCONTROL (s390).
   ENOENT     The specified `gpa` is outside defined memslots.
+  ENOEXEC    The vCPU has not been initialised (arm64).
   EINTR      An unmasked signal is pending and no page was processed.
   EFAULT     The parameter address was invalid.
+  EHWPOISON  A poisoned host page was encountered.
   EOPNOTSUPP Mapping memory for a GPA is unsupported by the
              hypervisor, and/or for the current vCPU state/mode.
   EIO        unexpected error conditions (also causes a WARN)
@@ -6577,7 +6580,17 @@ Errors:
 KVM_PRE_FAULT_MEMORY populates KVM's stage-2 page tables used to map memory
 for the current vCPU state.  KVM maps memory as if the vCPU generated a
 stage-2 read page fault, e.g. faults in memory as needed, but doesn't break
-CoW.  On x86, KVM does not mark any newly created stage-2 PTE as Accessed.
+CoW.  On arm64, KVM marks newly created stage-2 PTEs as Accessed, as it
+does for any stage-2 fault, but leaves the Accessed state of existing PTEs
+unchanged.  On x86, KVM does not mark any newly created stage-2 PTE as
+Accessed, and for s390 it is not applicable.
+
+On arm64, a GPA is interpreted as an IPA, and never interpreted as the IPA
+of a nested guest. Pre-faulting only populates canonical stage-2 page
+tables.
+
+The feature is not supported on arm64 if the protected KVM (pKVM) feature
+is enabled.
 
 In the case of confidential VM types where there is an initial set up of
 private guest memory before the guest is 'finalized'/measured, this ioctl
@@ -6592,7 +6605,7 @@ When the ioctl returns, the input values are updated to point to the
 remaining range.  If `size` > 0 on return, the caller can just issue
 the ioctl again with the same `struct kvm_map_memory` argument.
 
-Shadow page tables cannot support this ioctl because they
+On x86, shadow page tables cannot support this ioctl because they
 are indexed by virtual address or nested guest physical address.
 Calling this ioctl when the guest is using shadow page tables (for
 example because it is running a nested guest with nested page tables)
@@ -6821,6 +6834,35 @@ to populate the entire region.
 populated data is hashed and added to the guest's Realm Initial Measurement
 (RIM) stored by the RMM. This can then be retrieved by the guest (using the RSI
 interface) to present to an attestation server.
+
+4.147 KVM_ARM_RMI_INIT_RIPAS
+----------------------------
+
+:Capability: KVM_CAP_ARM_RMI
+:Architectures: arm64
+:Type: vm ioctl
+:Parameters: struct kvm_arm_rmi_init_ripas (in)
+:Returns: 0 on success, < 0 on error
+
+::
+
+  struct kvm_arm_rmi_init_ripas {
+	__u64 base;
+	__u64 size;
+	__u64 flags;
+	__u64 reserved[5];
+  };
+
+Initialize a guest_memfd-backed Realm IPA range to RIPAS_RAM before Realm
+activation. KVM also converts the corresponding guest_memfd range to private
+as part of the operation. The range must be page aligned and contained within
+a single guest_memfd-backed memslot. `flags` and `reserved` must be zero.
+
+Calling this ioctl is optional. An unpopulated range which is not initialized
+through this ioctl retains its initial RIPAS_EMPTY state. A subsequent guest
+request to change such a range to RIPAS_RAM exits to userspace with
+KVM_EXIT_MEMORY_FAULT. Conversely, userspace must not rely on receiving a
+RIPAS change exit for a range initialized by this ioctl.
 
 .. _kvm_run:
 
@@ -7654,6 +7696,37 @@ the ``KVM_EXIT_ARM_SEA_FLAG_GPA_VALID`` flag is set. Otherwise, the value of
 ``gpa`` is unknown.
 
 ::
+		/* KVM_EXIT_ARM64_TIO*/
+		struct {
+			__u64 flags;
+			__u64 nr;
+			__u64 vdev_id;
+			__u64 gpa_base;
+			__u64 gpa_top;
+			__u64 pa_base;
+			__u64 response;
+		} cca_exit;
+
+Used on arm64 systems. With ``KVM_CAP_ARM_RMI`` enabled, KVM exits when a
+guest needs host assistance to validate a device-memory GPA-to-PA mapping.
+The ``nr`` field identifies the event; currently the following values are
+defined:
+
+* ``RMI_EXIT_VDEV_VALIDATE_MAPPING``: the guest asks the VMM to validate a
+  device-memory GPA-to-PA mapping. KVM supplies the vDEVICE ID, the half-open
+  GPA range, and the starting PA from the protected REC exit. Userspace sets
+  ``response`` to ``KVM_ARM64_TIO_RESPONSE_APPROVE`` or
+  ``KVM_ARM64_TIO_RESPONSE_REJECT`` before the next ``KVM_RUN``. The default
+  is rejection. KVM uses the original REC values for the mapping and ignores
+  userspace changes to the request fields. Approval is consumed once.
+
+Private/shared state belongs to each device-memory interval. Guest-requested
+conversion is permitted in every TDI state. UNLOCK requires all private
+intervals to have completed shared cleanup; LOCK and RUN do not change them.
+Host BAR access requires shared guest_memfd attributes for the requested
+interval.
+
+The ``flags`` field must be zero.
 
 		/* Fix the size of the union. */
 		char padding[256];

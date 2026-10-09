@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# TSM (TEE Security Manager) host drivers
+#
+config ARM_CCA_HOST
+	tristate "Arm CCA Host driver"
+	depends on ARM64
+	depends on KVM
+	depends on PCI
+	depends on ARM_RMM_RMI
+	depends on IOMMUFD
+	depends on ARM_SMMU_V3
+	depends on HAVE_ARM_SMCCC_DISCOVERY
+	select PCI_TSM
+	select KEYS
+	select ASYMMETRIC_KEY_TYPE
+	select ASYMMETRIC_PUBLIC_KEY_SUBTYPE
+	select CRYPTO
+	select X509_CERTIFICATE_PARSER
+	select CRYPTO_ECDSA
+	select CRYPTO_RSA
+
+	help
+	  ARM CCA RMM firmware is the trusted runtime that enforces memory
+	  isolation and security for confidential computing on ARM. This driver
+	  provides the interface for communicating with RMM to support secure
+	  device assignment.
+
+	  If you choose 'M' here, this module will be called arm-cca-host.

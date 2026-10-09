@@ -80,7 +80,9 @@ static int rec_exit_ripas_change(struct kvm_vcpu *vcpu)
 	}
 
 	/* Exit to VMM, the actual RIPAS change is done on next entry */
-	kvm_prepare_memory_fault_exit(vcpu, base, top - base, false, false,
+	kvm_prepare_memory_fault_exit(vcpu, ALIGN_DOWN(base, PAGE_SIZE),
+				      ALIGN(top - base, PAGE_SIZE),
+				      false, false,
 				      ripas == RMI_RAM);
 	kvm_make_request(KVM_REQ_RMI, vcpu);
 
@@ -89,6 +91,22 @@ static int rec_exit_ripas_change(struct kvm_vcpu *vcpu)
 	 * API documentation
 	 */
 	return -EFAULT;
+}
+
+static int rec_exit_vdev_validate_mapping(struct kvm_vcpu *vcpu)
+{
+	struct rec_exit *exit = &vcpu->arch.rec.run->exit;
+
+	vcpu->run->exit_reason = KVM_EXIT_ARM64_TIO;
+	vcpu->run->cca_exit.flags = 0;
+	vcpu->run->cca_exit.nr = RMI_EXIT_VDEV_VALIDATE_MAPPING;
+	vcpu->run->cca_exit.vdev_id = exit->vdev_id_1;
+	vcpu->run->cca_exit.gpa_base = exit->dev_mem_base;
+	vcpu->run->cca_exit.gpa_top = exit->dev_mem_top;
+	vcpu->run->cca_exit.pa_base = exit->dev_mem_pa;
+	vcpu->run->cca_exit.response = KVM_ARM64_TIO_RESPONSE_REJECT;
+	kvm_make_request(KVM_REQ_RMI, vcpu);
+	return ARM_EXCEPTION_EXIT;
 }
 
 int kvm_rec_exit(struct kvm_vcpu *vcpu, int rec_run_ret)
@@ -153,6 +171,8 @@ int kvm_rec_exit(struct kvm_vcpu *vcpu, int rec_run_ret)
 		return ARM_EXCEPTION_TRAP;
 	case RMI_EXIT_RIPAS_CHANGE:
 		return rec_exit_ripas_change(vcpu);
+	case RMI_EXIT_VDEV_VALIDATE_MAPPING:
+		return rec_exit_vdev_validate_mapping(vcpu);
 	}
 
 	return rec_exit_fatal(vcpu, "Unsupported Realm exit reason",

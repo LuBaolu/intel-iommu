@@ -45,3 +45,23 @@ Date:		Jun 2005
 Description:
 		If the module source has MODULE_VERSION, this file will contain
 		the version of the source code.
+
+What:		/sys/module/module/parameters/async_probe
+Description:
+		(RW) Emits "1" if drivers from loadable modules attempt async
+		probing by default. Emits "0" if drivers from loadable modules
+		attempt synchronous probing by default. This value is overridden
+		(in priority order) by: the module's built-in "PROBE_FORCE_*"
+		requests, the "driver_async_probe=..." kernel command line, the
+		"async_probe" module option, then this default. Write a valid
+		boolean value to toggle this policy.
+
+What:		/sys/module/module/parameters/modules_autoprobe
+Description:
+		(RW) Emits "1" if drivers from loadable modules automatically
+		attach to their devices. Emits "0" if userspace is responsible
+		to attach devices to drivers post module load, or device
+		arrival. This value defaults to CONFIG_MODULES_AUTOPROBE compile
+		to configuration and is overridden by either a bus's autoprobe
+		policy or the per-module "autoprobe" option. Write a valid
+		boolean value to toggle this policy.

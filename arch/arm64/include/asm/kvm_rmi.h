@@ -103,6 +103,14 @@ u64 kvm_realm_reset_id_aa64dfr0_el1(const struct kvm_vcpu *vcpu, u64 val);
 bool kvm_rmi_supports_sve(void);
 
 int kvm_init_realm(struct kvm *kvm);
+#ifdef CONFIG_KVM
+int kvm_realm_ensure_created(struct kvm *kvm);
+#else
+static inline int kvm_realm_ensure_created(struct kvm *kvm)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 int kvm_activate_realm(struct kvm *kvm);
 void kvm_destroy_realm(struct kvm *kvm);
 int kvm_realm_teardown_stage2(struct kvm *kvm);
@@ -113,9 +121,12 @@ int kvm_rec_exit(struct kvm_vcpu *vcpu, int rec_run_status);
 int kvm_rec_handle_request(struct kvm_vcpu *vcpu);
 
 struct kvm_arm_rmi_populate;
+struct kvm_arm_rmi_init_ripas;
 
 int kvm_arm_rmi_populate(struct kvm *kvm,
 			 struct kvm_arm_rmi_populate *arg);
+int kvm_arm_rmi_init_ripas(struct kvm *kvm,
+			   struct kvm_arm_rmi_init_ripas *arg);
 
 enum kvm_gfn_range_filter;
 
@@ -124,7 +135,6 @@ void kvm_realm_unmap_range_filter(struct kvm *kvm,
 				  unsigned long size,
 				  bool may_block,
 				  enum kvm_gfn_range_filter attr_filter);
-
 void kvm_realm_unmap_range(struct kvm *kvm,
 			   unsigned long ipa,
 			   unsigned long size,
@@ -159,11 +169,18 @@ static inline bool kvm_realm_ext_allowed(long ext)
 	case KVM_CAP_ARM_PTRAUTH_GENERIC:
 	case KVM_CAP_SYNC_MMU:
 	case KVM_CAP_ARM_RMI:
+	case KVM_CAP_DEVICE_CTRL:
 		return true;
 	case KVM_CAP_ARM_SVE:
 		return kvm_rmi_supports_sve();
 	}
 	return false;
 }
+
+int realm_dev_mem_map(struct kvm *kvm, unsigned long vdev_phys,
+		      unsigned long start_ipa, unsigned long end_ipa,
+		      unsigned long start_pa);
+int realm_dev_mem_unmap_range(struct kvm *kvm,
+			    unsigned long start, unsigned long end);
 
 #endif /* __ASM_KVM_RMI_H */
