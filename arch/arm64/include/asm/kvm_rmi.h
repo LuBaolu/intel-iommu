@@ -58,7 +58,6 @@ enum realm_state {
  * @sro: Preallocated SRO state context for Realm MMU operations
  * @state: The lifetime state machine for the realm
  * @ia_bits: Number of valid Input Address bits in the IPA
- * @dev_mappings: RMM VDEV mapping ranges, protected by kvm->mmu_lock
  * @stage2_unmapped: The Realm stage-2 mappings have been removed
  */
 struct realm {
@@ -73,7 +72,6 @@ struct realm {
 	struct rmi_sro_state *sro;
 	enum realm_state state;
 	unsigned int ia_bits;
-	struct list_head dev_mappings;
 	bool stage2_unmapped;
 };
 
@@ -179,9 +177,5 @@ static inline bool kvm_realm_ext_allowed(long ext)
 	return false;
 }
 
-int realm_dev_mem_map(struct kvm *kvm, unsigned long pdev_phys,
-		unsigned long vdev_phys, unsigned long start_ipa,
-		unsigned long end_ipa, unsigned long start_pa);
-int realm_dev_mem_unmap(struct kvm *kvm, unsigned long vdev_phys);
 
 #endif /* __ASM_KVM_RMI_H */

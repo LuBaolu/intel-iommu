@@ -1029,14 +1029,12 @@ void *cca_vdev_create(struct cca_host_tdi *host_tdi, struct realm *realm,
 	/* Set up host_tdi before calling device communicate. */
 	host_tdi->rmm_vdev = rmm_vdev;
 	host_tdi->realm = realm;
-	host_tdi->state = RMI_VDEV_NEW;
 
 	ret = submit_vdev_state_transition_work(host_tdi, pdev,
 						RMI_VDEV_UNLOCKED);
 	/* failure is treated as rmi_vdev_create failure */
 	if (ret)
 		goto err_vdev_comm;
-	host_tdi->state = RMI_VDEV_UNLOCKED;
 
 	free_page((unsigned long)params);
 	return rmm_vdev;
@@ -1098,13 +1096,18 @@ int cca_vdev_device_unlock(struct cca_host_tdi *host_tdi,
 	phys_addr_t rmm_vdev_phys;
 	struct cca_host_pdev_dsc *pdev_dsc;
 	phys_addr_t rd_phys;
+	enum rmi_vdev_state state;
 	int ret = 0;
 	int rc;
 
 	cca_vdev_assert_locked(pdev);
 
-	if (host_tdi->state == RMI_VDEV_UNLOCKED ||
-	    host_tdi->state == RMI_VDEV_NEW)
+	/* RMM state decides admission, including after an earlier error. */
+	if (rmi_vdev_get_state(virt_to_phys(host_tdi->rmm_vdev), &state))
+		return -ENXIO;
+
+	if (state == RMI_VDEV_UNLOCKED ||
+	    state == RMI_VDEV_NEW)
 		return -EINVAL;
 
 	rd_phys = virt_to_phys(host_tdi->realm->rd);
@@ -1113,9 +1116,6 @@ int cca_vdev_device_unlock(struct cca_host_tdi *host_tdi,
 	rmm_pdev_phys = virt_to_phys(pdev_dsc->rmm_pdev);
 	if (rmi_vdev_unlock(rd_phys, rmm_pdev_phys, rmm_vdev_phys))
 		return -ENXIO;
-
-	/* RMM now considers the VDEV unlocked, even if communication fails. */
-	host_tdi->state = RMI_VDEV_UNLOCKED;
 
 	if (rmm_has_reg2_feature(RMI_FEATURE_REGISTER_2_VDEV_KROU)) {
 		struct pci_dev *rp = pcie_find_root_port(pf0_dev);
@@ -1150,20 +1150,14 @@ void cca_vdev_destroy(struct cca_host_tdi *host_tdi, struct realm *realm,
 	phys_addr_t rmm_vdev_phys;
 	struct cca_host_pdev_dsc *pdev_dsc;
 	phys_addr_t rd_phys = virt_to_phys(realm->rd);
+	enum rmi_vdev_state state;
 	int ret;
 
 	cca_vdev_assert_locked(pdev);
 	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
 
-	if (host_tdi->state != RMI_VDEV_UNLOCKED) {
-		ret = realm_dev_mem_unmap(host_tdi->kvm, rmm_vdev_phys);
-		if (ret) {
-			pci_err(pdev,
-				"failed to unmap vdev memory before destroy (%d)\n",
-				ret);
-			return;
-		}
-
+	if (rmi_vdev_get_state(rmm_vdev_phys, &state) ||
+	    state != RMI_VDEV_UNLOCKED) {
 		ret = cca_vdev_device_unlock(host_tdi, pdev);
 		if (ret)
 			pci_err(pdev, "failed to unlock vdev (%d)\n", ret);
@@ -1210,26 +1204,6 @@ static void vdev_fetch_object_workfn(struct work_struct *work)
 		setup_work->cache_size = CACHE_CHUNK_SIZE;
 }
 
-int cca_vdev_device_map(struct cca_host_tdi *host_tdi, struct pci_dev *pdev,
-			unsigned long gpa_base, unsigned long gpa_top,
-			unsigned long pa_base)
-{
-	struct kvm *kvm;
-	phys_addr_t rmm_pdev_phys;
-	phys_addr_t rmm_vdev_phys;
-	struct cca_host_pdev_dsc *pdev_dsc;
-
-	cca_vdev_assert_locked(pdev);
-
-	pdev_dsc = to_cca_pdev_dsc(pdev->tsm->dsm_dev);
-	kvm = host_tdi->kvm;
-	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
-	rmm_pdev_phys = virt_to_phys(pdev_dsc->rmm_pdev);
-
-	return realm_dev_mem_map(kvm, rmm_pdev_phys, rmm_vdev_phys,
-				 gpa_base, gpa_top, pa_base);
-}
-
 int cca_vdev_device_start(struct cca_host_tdi *host_tdi,
 			  struct pci_dev *pdev)
 {
@@ -1238,10 +1212,15 @@ int cca_vdev_device_start(struct cca_host_tdi *host_tdi,
 	struct cca_host_pdev_dsc *pdev_dsc;
 	struct realm *realm;
 	phys_addr_t rd_phys;
+	enum rmi_vdev_state state;
 
 	cca_vdev_assert_locked(pdev);
 
-	if (host_tdi->state != RMI_VDEV_LOCKED)
+	/* RMM state decides admission, including after an earlier error. */
+	if (rmi_vdev_get_state(virt_to_phys(host_tdi->rmm_vdev), &state))
+		return -ENXIO;
+
+	if (state != RMI_VDEV_LOCKED)
 		return -EINVAL;
 
 	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
@@ -1253,7 +1232,6 @@ int cca_vdev_device_start(struct cca_host_tdi *host_tdi,
 
 	if (rmi_vdev_start(rd_phys, rmm_pdev_phys, rmm_vdev_phys))
 		return -ENXIO;
-	host_tdi->state = RMI_VDEV_STARTED;
 	return submit_vdev_state_transition_work(host_tdi, pdev,
 						 RMI_VDEV_STARTED);
 }
@@ -1265,10 +1243,15 @@ int cca_vdev_device_lock(struct cca_host_tdi *host_tdi,
 	phys_addr_t rmm_pdev_phys;
 	phys_addr_t rmm_vdev_phys;
 	phys_addr_t rd_phys;
+	enum rmi_vdev_state state;
 
 	cca_vdev_assert_locked(pdev);
 
-	if (host_tdi->state != RMI_VDEV_UNLOCKED)
+	/* RMM state decides admission, including after an earlier error. */
+	if (rmi_vdev_get_state(virt_to_phys(host_tdi->rmm_vdev), &state))
+		return -ENXIO;
+
+	if (state != RMI_VDEV_UNLOCKED)
 		return -EINVAL;
 
 	rmm_vdev_phys = virt_to_phys(host_tdi->rmm_vdev);
@@ -1279,8 +1262,6 @@ int cca_vdev_device_lock(struct cca_host_tdi *host_tdi,
 	if (rmi_vdev_lock(rd_phys, rmm_pdev_phys, rmm_vdev_phys))
 		return -ENXIO;
 
-	/* Ensure teardown unlocks the VDEV if device communication fails. */
-	host_tdi->state = RMI_VDEV_LOCKED;
 	return submit_vdev_state_transition_work(host_tdi, pdev,
 						 RMI_VDEV_LOCKED);
 }
