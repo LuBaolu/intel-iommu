@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2024, NVIDIA CORPORATION & AFFILIATES
  */
+#include <linux/file.h>
+#include <linux/cleanup.h>
+#include <linux/tsm.h>
+
 #include "iommufd_private.h"
 
 void iommufd_viommu_destroy(struct iommufd_object *obj)
@@ -10,7 +14,12 @@ void iommufd_viommu_destroy(struct iommufd_object *obj)
 
 	if (viommu->ops && viommu->ops->destroy)
 		viommu->ops->destroy(viommu);
-	refcount_dec(&viommu->hwpt->common.obj.users);
+	if (viommu->tsm_dev)
+		tsm_put_device(viommu->tsm_dev);
+	if (viommu->hwpt)
+		refcount_dec(&viommu->hwpt->common.obj.users);
+	if (viommu->kvm_file)
+		fput(viommu->kvm_file);
 	xa_destroy(&viommu->vdevs);
 }
 
@@ -22,11 +31,12 @@ int iommufd_viommu_alloc_ioctl(struct iommufd_ucmd *ucmd)
 		.uptr = u64_to_user_ptr(cmd->data_uptr),
 		.len = cmd->data_len,
 	};
-	struct iommufd_hwpt_paging *hwpt_paging;
+	struct iommufd_hwpt_paging *hwpt_paging = NULL;
+	struct tsm_dev *tsm_dev = NULL;
 	struct iommufd_viommu *viommu;
 	struct iommufd_device *idev;
-	struct iommu_device *iommu_dev;
-	const struct iommu_ops *ops;
+	struct iommu_device *iommu_dev = NULL;
+	const struct iommufd_viommu_ops *ops;
 	size_t viommu_size;
 	int rc;
 
@@ -37,41 +47,66 @@ int iommufd_viommu_alloc_ioctl(struct iommufd_ucmd *ucmd)
 	if (IS_ERR(idev))
 		return PTR_ERR(idev);
 
-	iommu_dev = iommufd_device_get_iommu_dev(idev);
-	if (!iommu_dev) {
-		rc = -EOPNOTSUPP;
+	tsm_dev = tsm_get_device(idev->dev);
+	if (IS_ERR(tsm_dev)) {
+		rc = PTR_ERR(tsm_dev);
+		tsm_dev = NULL;
 		goto out_put_idev;
 	}
-	ops = iommu_dev->ops;
-	if (!ops->get_viommu_size || !ops->viommu_init) {
-		rc = -EOPNOTSUPP;
+	ops = tsm_dev ? tsm_viommu_get_ops(tsm_dev, idev->dev, cmd->type) : NULL;
+	if (IS_ERR(ops)) {
+		rc = PTR_ERR(ops);
 		goto out_put_idev;
 	}
-
-	viommu_size = ops->get_viommu_size(idev->dev, cmd->type);
-	if (!viommu_size) {
-		rc = -EOPNOTSUPP;
-		goto out_put_idev;
+	if (!ops) {
+		if (tsm_dev) {
+			tsm_put_device(tsm_dev);
+			tsm_dev = NULL;
+		}
+		iommu_dev = iommufd_device_get_iommu_dev(idev);
+		if (!iommu_dev) {
+			rc = -EOPNOTSUPP;
+			goto out_put_idev;
+		}
+		if (!iommu_dev->ops->get_viommu_ops) {
+			rc = -EOPNOTSUPP;
+			goto out_put_idev;
+		}
+		ops = iommu_dev->ops->get_viommu_ops(idev->dev, cmd->type);
+		if (!ops) {
+			rc = -EOPNOTSUPP;
+			goto out_put_idev;
+		}
 	}
 
 	/*
-	 * It is a driver bug for providing a viommu_size smaller than the core
-	 * vIOMMU structure size
+	 * It is a driver bug to omit the required operations or provide a size
+	 * smaller than the core vIOMMU structure.
 	 */
-	if (WARN_ON_ONCE(viommu_size < sizeof(*viommu))) {
+	if (WARN_ON_ONCE(!ops->get_viommu_size || !ops->viommu_init)) {
+		rc = -EOPNOTSUPP;
+		goto out_put_idev;
+	}
+	viommu_size = ops->get_viommu_size(idev->dev, cmd->type);
+	if (!viommu_size || WARN_ON_ONCE(viommu_size < sizeof(*viommu))) {
 		rc = -EOPNOTSUPP;
 		goto out_put_idev;
 	}
 
-	hwpt_paging = iommufd_get_hwpt_paging(ucmd, cmd->hwpt_id);
-	if (IS_ERR(hwpt_paging)) {
-		rc = PTR_ERR(hwpt_paging);
+	if ((ops->flags & IOMMUFD_VIOMMU_NO_HWPT) && cmd->hwpt_id) {
+		rc = -EINVAL;
 		goto out_put_idev;
 	}
-
-	if (!hwpt_paging->nest_parent) {
-		rc = -EINVAL;
-		goto out_put_hwpt;
+	if (!(ops->flags & IOMMUFD_VIOMMU_NO_HWPT)) {
+		hwpt_paging = iommufd_get_hwpt_paging(ucmd, cmd->hwpt_id);
+		if (IS_ERR(hwpt_paging)) {
+			rc = PTR_ERR(hwpt_paging);
+			goto out_put_idev;
+		}
+		if (!hwpt_paging->nest_parent) {
+			rc = -EINVAL;
+			goto out_put_hwpt;
+		}
 	}
 
 	viommu = (struct iommufd_viommu *)_iommufd_object_alloc_ucmd(
@@ -82,10 +117,15 @@ int iommufd_viommu_alloc_ioctl(struct iommufd_ucmd *ucmd)
 	}
 
 	xa_init(&viommu->vdevs);
+	if (idev->kvm_file)
+		viommu->kvm_file = get_file(idev->kvm_file);
 	viommu->type = cmd->type;
 	viommu->ictx = ucmd->ictx;
+	viommu->tsm_dev = tsm_dev;
+	tsm_dev = NULL;
 	viommu->hwpt = hwpt_paging;
-	refcount_inc(&viommu->hwpt->common.obj.users);
+	if (viommu->hwpt)
+		refcount_inc(&viommu->hwpt->common.obj.users);
 	INIT_LIST_HEAD(&viommu->veventqs);
 	init_rwsem(&viommu->veventqs_rwsem);
 	/*
@@ -95,23 +135,22 @@ int iommufd_viommu_alloc_ioctl(struct iommufd_ucmd *ucmd)
 	 */
 	viommu->iommu_dev = iommu_dev;
 
-	rc = ops->viommu_init(viommu, hwpt_paging->common.domain,
+	rc = ops->viommu_init(viommu, idev->dev,
+			      hwpt_paging ? hwpt_paging->common.domain : NULL,
 			      user_data.len ? &user_data : NULL);
 	if (rc)
 		goto out_put_hwpt;
-
-	/* It is a driver bug that viommu->ops isn't filled */
-	if (WARN_ON_ONCE(!viommu->ops)) {
-		rc = -EOPNOTSUPP;
-		goto out_put_hwpt;
-	}
+	viommu->ops = ops;
 
 	cmd->out_viommu_id = viommu->obj.id;
 	rc = iommufd_ucmd_respond(ucmd, sizeof(*cmd));
 
 out_put_hwpt:
-	iommufd_put_object(ucmd->ictx, &hwpt_paging->common.obj);
+	if (hwpt_paging)
+		iommufd_put_object(ucmd->ictx, &hwpt_paging->common.obj);
 out_put_idev:
+	if (tsm_dev)
+		tsm_put_device(tsm_dev);
 	iommufd_put_object(ucmd->ictx, &idev->obj);
 	return rc;
 }
@@ -171,10 +210,12 @@ int iommufd_vdevice_alloc_ioctl(struct iommufd_ucmd *ucmd)
 		goto out_put_viommu;
 	}
 
-	iommu_dev = iommufd_device_get_iommu_dev(idev);
-	if (!iommu_dev || viommu->iommu_dev != iommu_dev) {
-		rc = -EINVAL;
-		goto out_put_idev;
+	if (viommu->iommu_dev) {
+		iommu_dev = iommufd_device_get_iommu_dev(idev);
+		if (!iommu_dev || viommu->iommu_dev != iommu_dev) {
+			rc = -EINVAL;
+			goto out_put_idev;
+		}
 	}
 
 	mutex_lock(&idev->igroup->lock);
@@ -394,7 +435,7 @@ int iommufd_hw_queue_alloc_ioctl(struct iommufd_ucmd *ucmd)
 	if (IS_ERR(viommu))
 		return PTR_ERR(viommu);
 
-	if (!viommu->ops || !viommu->ops->get_hw_queue_size ||
+	if (!viommu->hwpt || !viommu->ops || !viommu->ops->get_hw_queue_size ||
 	    !viommu->ops->hw_queue_init_phys) {
 		rc = -EOPNOTSUPP;
 		goto out_put_viommu;

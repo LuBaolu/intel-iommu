@@ -6,6 +6,7 @@
 #ifndef __LINUX_IOMMUFD_H
 #define __LINUX_IOMMUFD_H
 
+#include <linux/bits.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/iommu.h>
@@ -23,7 +24,9 @@ struct iommufd_access;
 struct iommufd_ctx;
 struct iommufd_device;
 struct iommufd_viommu_ops;
+struct tsm_dev;
 struct page;
+struct tsm_guest_req_info;
 
 enum iommufd_object_type {
 	IOMMUFD_OBJ_NONE,
@@ -59,7 +62,9 @@ struct iommufd_object {
 };
 
 struct iommufd_device *iommufd_device_bind(struct iommufd_ctx *ictx,
-					   struct device *dev, u32 *id);
+					   struct device *dev,
+					   struct file *kvm_file,
+					   u32 *id);
 void iommufd_device_unbind(struct iommufd_device *idev);
 
 int iommufd_device_attach(struct iommufd_device *idev, ioasid_t pasid,
@@ -99,8 +104,11 @@ void iommufd_ctx_get(struct iommufd_ctx *ictx);
 struct iommufd_viommu {
 	struct iommufd_object obj;
 	struct iommufd_ctx *ictx;
+	/* Physical IOMMU backing, or NULL. */
 	struct iommu_device *iommu_dev;
 	struct iommufd_hwpt_paging *hwpt;
+	struct file *kvm_file;
+	struct tsm_dev *tsm_dev;
 
 	const struct iommufd_viommu_ops *ops;
 
@@ -122,6 +130,10 @@ struct iommufd_vdevice {
 	 */
 	u64 virt_id;
 
+	/* Guest TSM requests accepted by this vdevice; set by vdevice_init(). */
+	u64 tsm_req_op_mask;
+	u32 tsm_tvm_arch;
+
 	/* Clean up all driver-specific parts of an iommufd_vdevice */
 	void (*destroy)(struct iommufd_vdevice *vdev);
 };
@@ -140,8 +152,19 @@ struct iommufd_hw_queue {
 	void (*destroy)(struct iommufd_hw_queue *hw_queue);
 };
 
+#define IOMMUFD_VIOMMU_NO_HWPT	BIT(0)
+
 /**
  * struct iommufd_viommu_ops - vIOMMU specific operations
+ * @flags: Properties needed by the core before vIOMMU initialization
+ * @get_viommu_size: Get the size of a driver-level vIOMMU structure for a given
+ *                   @dev corresponding to @viommu_type. Driver should return 0
+ *                   if vIOMMU isn't supported accordingly. It is required for
+ *                   driver to use the VIOMMU_STRUCT_SIZE macro to sanitize the
+ *                   driver-level vIOMMU structure related to the core one
+ * @viommu_init: Initialize the selected driver-level iommufd_viommu for @dev.
+ *               @parent_domain is the nesting parent, or NULL for an
+ *               implementation that does not use a parent HWPT.
  * @destroy: Clean up all driver-specific parts of an iommufd_viommu. The memory
  *           of the vIOMMU will be free-ed by iommufd core after calling this op
  * @alloc_domain_nested: Allocate a IOMMU_DOMAIN_NESTED on a vIOMMU that holds a
@@ -164,6 +187,7 @@ struct iommufd_hw_queue {
  *                include/uapi/linux/iommufd.h)
  *                If driver has a deinit function to revert what vdevice_init op
  *                does, it should set it to the @vdev->destroy function pointer
+ * @vdevice_tsm_req: Forward a guest TSM request to a driver-owned vDEVICE
  * @get_hw_queue_size: Get the size of a driver-defined HW queue structure for a
  *                     given @viommu corresponding to @queue_type. Driver should
  *                     return 0 if HW queue aren't supported accordingly. It is
@@ -182,6 +206,12 @@ struct iommufd_hw_queue {
  *                      does, it should set it to the @hw_queue->destroy pointer
  */
 struct iommufd_viommu_ops {
+	unsigned long flags;
+	size_t (*get_viommu_size)(struct device *dev,
+		enum iommu_viommu_type type);
+	int (*viommu_init)(struct iommufd_viommu *viommu, struct device *dev,
+		struct iommu_domain *parent_domain,
+		const struct iommu_user_data *user_data);
 	void (*destroy)(struct iommufd_viommu *viommu);
 	struct iommu_domain *(*alloc_domain_nested)(
 		struct iommufd_viommu *viommu, u32 flags,
@@ -190,6 +220,9 @@ struct iommufd_viommu_ops {
 				struct iommu_user_data_array *array);
 	const size_t vdevice_size;
 	int (*vdevice_init)(struct iommufd_vdevice *vdev);
+	ssize_t (*vdevice_tsm_req)(struct iommufd_vdevice *vdev,
+				   struct tsm_guest_req_info *info,
+				   u64 *tsm_code);
 	size_t (*get_hw_queue_size)(struct iommufd_viommu *viommu,
 				    enum iommu_hw_queue_type queue_type);
 	/* AMD's HW will add hw_queue_init simply using @hw_queue->base_addr */

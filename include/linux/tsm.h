@@ -6,6 +6,7 @@
 #include <linux/types.h>
 #include <linux/uuid.h>
 #include <linux/device.h>
+#include <uapi/linux/iommufd.h>
 
 #define TSM_REPORT_INBLOB_MAX 64
 #define TSM_REPORT_OUTBLOB_MAX SZ_16M
@@ -109,6 +110,8 @@ struct tsm_report_ops {
 };
 
 struct pci_tsm_ops;
+struct iommufd_viommu_ops;
+
 struct tsm_dev {
 	struct device dev;
 	int id;
@@ -123,4 +126,47 @@ int tsm_report_unregister(const struct tsm_report_ops *ops);
 struct tsm_dev *tsm_register(struct device *parent, struct pci_tsm_ops *ops);
 void tsm_unregister(struct tsm_dev *tsm_dev);
 struct tsm_dev *find_tsm_dev(int id);
+
+#ifdef CONFIG_TSM
+struct tsm_dev *tsm_get_device(struct device *dev);
+void tsm_put_device(struct tsm_dev *tsm_dev);
+const struct iommufd_viommu_ops *tsm_viommu_get_ops(struct tsm_dev *tsm_dev,
+		struct device *dev, enum iommu_viommu_type type);
+
+/**
+ * struct tsm_guest_req_info - parameters for a guest-initiated TSM request
+ * @op: operation for the guest-initiated request
+ * @tvm_arch: guest TVM architecture
+ * @req: userspace buffer containing the guest request
+ * @req_len: request size in bytes, at most INT_MAX
+ * @resp: userspace buffer for the response
+ * @resp_len: response buffer capacity in bytes, at most INT_MAX
+ */
+struct tsm_guest_req_info {
+	enum iommu_vdevice_tsm_guest_req_op op;
+	enum iommu_vdevice_tsm_guest_tvm_arch tvm_arch;
+	const void __user *req;
+	u32 req_len;
+	void __user *resp;
+	u32 resp_len;
+};
+#else
+static inline struct tsm_dev *tsm_get_device(struct device *dev)
+{
+	return NULL;
+}
+
+static inline void tsm_put_device(struct tsm_dev *tsm_dev)
+{
+}
+
+static inline const struct iommufd_viommu_ops *
+tsm_viommu_get_ops(struct tsm_dev *tsm_dev, struct device *dev,
+		enum iommu_viommu_type type)
+{
+	return NULL;
+}
+
+struct tsm_guest_req_info;
+#endif
 #endif /* __TSM_H */
