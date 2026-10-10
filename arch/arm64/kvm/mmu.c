@@ -1803,6 +1803,10 @@ static int gmem_abort(const struct kvm_s2_fault_desc *s2fd,
 	if (KVM_BUG_ON(!kvm_slot_has_gmem(s2fd->memslot), kvm))
 		return -EINVAL;
 
+	/* Private device mappings are installed through protected requests. */
+	if (WARN_ON_ONCE(device && is_private))
+		return -EACCES;
+
 	if (device && (s2fd->nested || kvm_s2_fault_is_exec(s2fd)))
 		return -EACCES;
 
@@ -1877,11 +1881,6 @@ static int gmem_abort(const struct kvm_s2_fault_desc *s2fd,
 		goto out_unlock;
 	}
 
-	if (device && is_private) {
-		/* Private device faults can retry an installed map, never create RAM. */
-		ret = -EACCES;
-		goto out_unlock;
-	}
 	if (kvm_vm_is_realm(kvm)) {
 		prot &= ~KVM_PGTABLE_PROT_X;
 		ret = realm_map_ipa(kvm, s2fd->fault_ipa, pfn,
