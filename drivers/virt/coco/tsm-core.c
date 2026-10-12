@@ -30,7 +30,8 @@ static DEFINE_IDA(tsm_ida);
  * tsm_get_device() - Pin the TSM attached to a device
  * @dev: device whose TSM is to be pinned
  *
- * A successful lookup pins the backend module. Backends providing vIOMMU
+ * A successful lookup takes a TSM device reference and pins the backend
+ * module. Release both with tsm_put_device(). Backends providing vIOMMU
  * operations must not unregister their TSM independently of module unload.
  * Return: NULL if no vIOMMU-capable TSM is attached, an error if the module
  * cannot be pinned, or the TSM device associated with the pinned backend.
@@ -45,7 +46,10 @@ EXPORT_SYMBOL_GPL(tsm_get_device);
 
 void tsm_put_device(struct tsm_dev *tsm_dev)
 {
-	module_put(tsm_dev->pci_ops->owner);
+	struct module *owner = tsm_dev->pci_ops->owner;
+
+	put_device(&tsm_dev->dev);
+	module_put(owner);
 }
 EXPORT_SYMBOL_GPL(tsm_put_device);
 

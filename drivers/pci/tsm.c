@@ -53,6 +53,7 @@ struct tsm_dev *pci_tsm_get_device(struct pci_dev *pdev)
 		return NULL;
 	if (!try_module_get(ops->owner))
 		return ERR_PTR(-ENODEV);
+	get_device(&tsm_dev->dev);
 	return tsm_dev;
 }
 EXPORT_SYMBOL_GPL(pci_tsm_get_device);
