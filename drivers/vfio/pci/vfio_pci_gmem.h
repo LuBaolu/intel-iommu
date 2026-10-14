@@ -13,6 +13,12 @@ struct vfio_pci_gmem {
 	struct iommufd_vdevice *ivdev;
 	struct file *resource;
 	unsigned long owner;
+	/*
+	 * Disables callbacks and new bind/private requests. Set once with
+	 * both the vDEVICE MMIO and VFIO memory locks held; readers hold
+	 * either lock. Shared cleanup remains allowed after detachment.
+	 */
+	bool callbacks_detached;
 };
 
 #endif /* VFIO_PCI_GMEM_H */

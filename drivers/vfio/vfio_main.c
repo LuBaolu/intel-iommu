@@ -274,9 +274,9 @@ static void *vfio_gmem_provider_attach(struct file *file,
 	if (!ops || !ops->attach || !ops->release)
 		return ERR_PTR(-EOPNOTSUPP);
 
-	/* VFIO requires PFN lookup, binding and conversion. */
+	/* VFIO requires PFN lookup, binding, conversion and detachment. */
 	if (!ops->get_pfn || !ops->bind || !ops->prepare_conversion ||
-	    !ops->finish_conversion)
+	    !ops->finish_conversion || !ops->detach)
 		return ERR_PTR(-EOPNOTSUPP);
 
 	/* VFIO provides PFNs, not folios. */
@@ -340,7 +340,12 @@ static void vfio_gmem_provider_finish_conversion(
 	provider->ops->finish_conversion(provider->data, req);
 }
 
+static void vfio_gmem_provider_detach(void *data)
+{
+	struct vfio_gmem_provider *provider = data;
 
+	provider->ops->detach(provider->data);
+}
 
 static const struct guest_memfd_provider_operations vfio_gmem_provider_ops = {
 	.attach = vfio_gmem_provider_attach,
@@ -349,6 +354,7 @@ static const struct guest_memfd_provider_operations vfio_gmem_provider_ops = {
 	.get_pfn = vfio_gmem_provider_get_pfn,
 	.prepare_conversion = vfio_gmem_provider_prepare_conversion,
 	.finish_conversion = vfio_gmem_provider_finish_conversion,
+	.detach = vfio_gmem_provider_detach,
 };
 
 static const struct super_operations vfio_fs_super_ops = {

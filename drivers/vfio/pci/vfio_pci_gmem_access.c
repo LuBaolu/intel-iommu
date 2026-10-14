@@ -14,7 +14,7 @@
  * Called by vfio_pci_zap_bars() after it removes host BAR mappings. Notify
  * guest_memfd synchronously so KVM removes the corresponding shared guest
  * mappings. This helper does not remove host mappings or change attributes.
- * Skip notification if no provider is attached.
+ * Skip notification if no provider is attached or its callbacks are detached.
  *
  */
 void vfio_pci_gmem_invalidate(struct vfio_pci_core_device *vdev)
@@ -22,7 +22,7 @@ void vfio_pci_gmem_invalidate(struct vfio_pci_core_device *vdev)
 	struct vfio_pci_gmem *ctx = vdev->gmem;
 
 	lockdep_assert_held_write(&vdev->memory_lock);
-	if (ctx)
+	if (ctx && !ctx->callbacks_detached)
 		ctx->gmem->invalidate(ctx->gmem);
 }
 
@@ -35,6 +35,7 @@ void vfio_pci_gmem_invalidate(struct vfio_pci_core_device *vdev)
  * Consult completed guest_memfd attributes for the requested interval.
  * Private mappings in another interval do not block this access. Try the
  * inode lock instead of waiting in the reverse order from conversion.
+ * Detachment excludes access during teardown.
  *
  * Return: true when the requested interval is accessible.
  */
@@ -51,6 +52,8 @@ bool vfio_pci_gmem_access_allowed(struct vfio_pci_core_device *vdev,
 	if (!ctx->ivdev)
 		return false;
 
+	if (ctx->callbacks_detached)
+		return false;
 	return ctx->gmem->host_accessible(ctx->gmem,
 					  offset, size);
 }

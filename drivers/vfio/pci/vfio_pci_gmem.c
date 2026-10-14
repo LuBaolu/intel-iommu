@@ -176,6 +176,8 @@ static int vfio_gmem_bind(void *data, u64 offset, u64 size,
 	int ret;
 
 	guard(iommufd_vdevice_mmio)(ctx->ivdev);
+	if (ctx->callbacks_detached)
+		return -ENODEV;
 	ret = vfio_gmem_resolve_bar_range(ctx, offset, size, &bar, &off, &pa);
 	if (ret)
 		return ret;
@@ -219,6 +221,8 @@ static int vfio_gmem_get_pfn(void *data, u64 offset, unsigned long *pfn)
 	int ret;
 
 	guard(rwsem_read)(&vdev->memory_lock);
+	if (ctx->callbacks_detached)
+		return -ENODEV;
 	if (vdev->pm_runtime_engaged || !__vfio_pci_memory_enabled(vdev))
 		return -EAGAIN;
 
@@ -248,6 +252,10 @@ static int vfio_gmem_prepare_conversion(void *context,
 	struct vfio_pci_gmem *ctx = context;
 
 	iommufd_vdevice_mmio_lock(ctx->ivdev);
+	if (req && ctx->callbacks_detached) {
+		iommufd_vdevice_mmio_unlock(ctx->ivdev);
+		return -ENODEV;
+	}
 	if (req && req->vdev_id != ctx->ivdev->virt_id) {
 		iommufd_vdevice_mmio_unlock(ctx->ivdev);
 		return -EPERM;
@@ -288,6 +296,22 @@ static void vfio_gmem_finish_conversion(void *context,
 }
 
 /**
+ * vfio_gmem_detach() - stop invalidation callbacks before core teardown
+ * @data: attached provider context
+ *
+ * Mark the provider detached under the VFIO memory lock. VFIO userspace
+ * mappings remain excluded until release clears the provider association.
+ */
+static void vfio_gmem_detach(void *data)
+{
+	struct vfio_pci_gmem *ctx = data;
+
+	guard(iommufd_vdevice_mmio)(ctx->ivdev);
+	scoped_guard(rwsem_write, &ctx->vdev->memory_lock)
+		ctx->callbacks_detached = true;
+}
+
+/**
  * vfio_gmem_release() - release a provider after successful core cleanup
  * @data: provider context to release
  *
@@ -318,6 +342,7 @@ const struct guest_memfd_provider_operations vfio_pci_gmem_provider_ops = {
 	.get_pfn = vfio_gmem_get_pfn,
 	.prepare_conversion = vfio_gmem_prepare_conversion,
 	.finish_conversion = vfio_gmem_finish_conversion,
+	.detach = vfio_gmem_detach,
 	.release = vfio_gmem_release,
 };
 EXPORT_SYMBOL_GPL(vfio_pci_gmem_provider_ops);
