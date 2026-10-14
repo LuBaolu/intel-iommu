@@ -193,6 +193,9 @@ struct kvm_exit_snp_req_certs {
 #define KVM_EXIT_ARM_SEA          41
 #define KVM_EXIT_ARM_LDST64B      42
 #define KVM_EXIT_SNP_REQ_CERTS    43
+#define KVM_EXIT_ARM64_TIO	  44
+#define KVM_ARM64_TIO_RESPONSE_REJECT	0
+#define KVM_ARM64_TIO_RESPONSE_APPROVE	1
 
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
@@ -497,6 +500,16 @@ struct kvm_run {
 		} arm_sea;
 		/* KVM_EXIT_SNP_REQ_CERTS */
 		struct kvm_exit_snp_req_certs snp_req_certs;
+		/* KVM_EXIT_ARM64_TIO*/
+		struct {
+			__u64 flags;
+			__u64 nr;
+			__u64 vdev_id;
+			__u64 gpa_base;
+			__u64 gpa_top; /* exclusive */
+			__u64 pa_base;
+			__u64 response;
+		} cca_exit;
 		/* Fix the size of the union. */
 		char padding[256];
 	};
@@ -1709,6 +1722,16 @@ struct kvm_arm_rmi_populate {
 	__u64 source_uaddr;
 	__u32 flags;
 	__u32 reserved;
+};
+
+/* Initialize a guest_memfd-backed Realm IPA range to RIPAS_RAM. */
+#define KVM_ARM_RMI_INIT_RIPAS	_IOW(KVMIO, 0xd8, struct kvm_arm_rmi_init_ripas)
+
+struct kvm_arm_rmi_init_ripas {
+	__u64 base;
+	__u64 size;
+	__u64 flags;
+	__u64 reserved[5];
 };
 
 #endif /* __LINUX_KVM_H */

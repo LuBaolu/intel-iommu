@@ -7,13 +7,20 @@
 #define __LINUX_ARM_RMI_CMDS_H_
 
 #include <linux/arm-smccc-rmi.h>
+#include <linux/bitfield.h>
 #include <linux/bug.h>
 #include <linux/gfp.h>
 #include <linux/processor.h>
 #include <linux/string.h>
 #include <linux/types.h>
-
 #define RMI_MAX_ADDR_LIST	256
+
+struct rtt_entry {
+	unsigned long walk_level;
+	unsigned long desc;
+	int state;
+	int ripas;
+};
 
 struct rmi_sro_state {
 	struct arm_smccc_1_2_regs regs;
@@ -71,6 +78,16 @@ static inline int rmi_undelegate_page(phys_addr_t phys)
 }
 
 bool is_rmi_available(void);
+static inline bool rmm_is_active(void)
+{
+	/* If RMM is active we should atlest find non zero S2SZ field */
+	return rmi_feat_reg(0) != 0;
+}
+
+static inline bool rmm_has_reg2_feature(unsigned long feature)
+{
+	return !!u64_get_bits(rmi_feat_reg(2), feature);
+}
 
 long rmi_sro_memxfer_execute(struct rmi_sro_state *sro, gfp_t gfp);
 void rmi_sro_free(struct rmi_sro_state *sro);
@@ -486,6 +503,34 @@ static inline long rmi_rtt_unprot_map(unsigned long rd,
 }
 
 /**
+ * rmi_rtt_read_entry() - Read an RTTE
+ * @rd: PA of the RD
+ * @ipa: IPA for which to read the RTTE
+ * @level: RTT level at which to read the RTTE
+ * @rtt: Output structure describing the RTTE
+ *
+ * Reads a RTTE (Realm Translation Table Entry).
+ *
+ * Return: RMI return code
+ */
+static inline long rmi_rtt_read_entry(unsigned long rd, unsigned long ipa,
+		long level, struct rtt_entry *rtt)
+{
+	struct arm_smccc_1_2_regs regs = {
+		SMC_RMI_RTT_READ_ENTRY, rd, ipa, level
+	};
+
+	rmi_smccc_invoke(&regs);
+
+	rtt->walk_level = regs.a1;
+	rtt->state = regs.a2 & 0xff;
+	rtt->desc = regs.a3;
+	rtt->ripas = regs.a4 & 0xff;
+
+	return regs.a0;
+}
+
+/**
  * rmi_rtt_set_ripas() - Set RIPAS for an running realm
  * @rd: PA of the RD
  * @rec: PA of the REC making the request
@@ -554,5 +599,282 @@ static inline long rmi_rtt_unprot_unmap(unsigned long rd,
 
 	return RMI_SUCCESS;
 }
+
+static inline unsigned long rmi_pdev_get_state(unsigned long pdev_phys, enum rmi_pdev_state *state)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_GET_STATE, pdev_phys, &res);
+
+	*state = res.a1;
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_communicate(unsigned long pdev_phys,
+						 unsigned long pdev_comm_data_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_COMMUNICATE,
+			     pdev_phys, pdev_comm_data_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_abort(unsigned long pdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_ABORT, pdev_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_communicate(unsigned long rd_phys,
+		unsigned long pdev_phys, unsigned long vdev_phys,
+		unsigned long vdev_comm_data_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_COMMUNICATE, rd_phys, pdev_phys,
+			     vdev_phys, vdev_comm_data_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_get_state(unsigned long vdev_phys,
+		enum rmi_vdev_state *state)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_GET_STATE, vdev_phys, &res);
+
+	*state = res.a1;
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_abort(unsigned long vdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_ABORT, vdev_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_create(unsigned long rd,
+		unsigned long pdev_phys, unsigned long vdev_phys,
+		unsigned long vdev_params_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_CREATE, rd, pdev_phys,
+			     vdev_phys, vdev_params_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_destroy(unsigned long rd,
+		unsigned long pdev_phys, unsigned long vdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_DESTROY, rd, pdev_phys, vdev_phys,
+			     &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_unlock(unsigned long rd,
+		unsigned long pdev_phys, unsigned long vdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_UNLOCK, rd, pdev_phys, vdev_phys,
+			     &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_lock(unsigned long rd,
+		unsigned long pdev_phys, unsigned long vdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_LOCK, rd, pdev_phys, vdev_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_start(unsigned long rd,
+		unsigned long pdev_phys, unsigned long vdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_START, rd, pdev_phys, vdev_phys,
+			     &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_vdev_get_interface_report(unsigned long rd,
+		unsigned long pdev_phys, unsigned long vdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_GET_INTERFACE_REPORT,
+			     rd, pdev_phys, vdev_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long
+rmi_vdev_get_device_measurements(unsigned long rd, unsigned long pdev_phys,
+				 unsigned long vdev_phys,
+				 unsigned long param_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_VDEV_GET_MEASUREMENTS,
+			     rd, pdev_phys, vdev_phys, param_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_stop(unsigned long pdev_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_STOP, pdev_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_set_pubkey(unsigned long pdev_phys, unsigned long key_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_SET_PUBKEY, pdev_phys, key_phys, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_stream_connect(unsigned long stream_params_phys,
+		unsigned long *stream_handle)
+{
+
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_STREAM_CONNECT, stream_params_phys, &res);
+
+	*stream_handle = res.a1;
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_stream_complete(unsigned long pdev1_phys,
+		unsigned long pdev2_phys, unsigned long stream_handle)
+{
+
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_STREAM_COMPLETE, pdev1_phys,
+			     pdev2_phys, stream_handle, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_stream_disconnect(unsigned long pdev1_phys,
+		unsigned long pdev2_phys, unsigned long stream_handle)
+{
+
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_STREAM_DISCONNECT, pdev1_phys,
+			     pdev2_phys, stream_handle, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_psmmu_info(unsigned long psmmu_phys,
+		unsigned long psmmu_info_phys)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PSMMU_INFO,
+			     psmmu_phys, psmmu_info_phys, &res);
+
+	return res.a0;
+}
+
+struct rmi_psmmu_event_details {
+	u64 flags;
+	u64 event_num;
+	u64 stream_id;
+	u64 fetch_addr;
+	u64 input_addr;
+	u64 syndrome;
+};
+
+static inline unsigned long rmi_psmmu_irq_notify(unsigned long psmmu_phys,
+		unsigned long irqs, struct rmi_psmmu_event_details *event)
+{
+	struct arm_smccc_1_2_regs regs = {
+		.a0 = SMC_RMI_PSMMU_IRQ_NOTIFY,
+		.a1 = psmmu_phys,
+		.a2 = irqs,
+	};
+
+	arm_smccc_1_2_invoke(&regs, &regs);
+
+	event->flags = regs.a1;
+	event->event_num = regs.a2;
+	event->stream_id = regs.a3;
+	event->fetch_addr = regs.a4;
+	event->input_addr = regs.a5;
+	event->syndrome = regs.a6;
+
+	return regs.a0;
+}
+
+static inline unsigned long rmi_psmmu_event_consume(unsigned long psmmu_phys,
+		unsigned long irqs)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PSMMU_EVENT_CONSUME,
+			     psmmu_phys, irqs, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_stream_key_refresh(unsigned long pdev1_phys,
+		unsigned long pdev2_phys, unsigned long stream_handle)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_STREAM_KEY_REFRESH, pdev1_phys,
+			     pdev2_phys, stream_handle, &res);
+
+	return res.a0;
+}
+
+static inline unsigned long rmi_pdev_stream_key_purge(unsigned long pdev1_phys,
+		unsigned long pdev2_phys, unsigned long stream_handle)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(SMC_RMI_PDEV_STREAM_KEY_PURGE, pdev1_phys,
+			     pdev2_phys, stream_handle, &res);
+
+	return res.a0;
+}
+
+int rmi_psmmu_activate(unsigned long psmmu_phys,
+		unsigned long psmmu_params_phys, unsigned long *rmi_ret);
+int rmi_psmmu_deactivate(unsigned long psmmu_phys, unsigned long *rmi_ret);
+int rmi_psmmu_st_l2_create(unsigned long psmmu_phys,
+		unsigned long stream_id, unsigned long *rmi_ret);
+int rmi_psmmu_st_l2_destroy(unsigned long psmmu_phys,
+		unsigned long stream_id, unsigned long *rmi_ret);
 
 #endif

@@ -18,6 +18,7 @@
 #include <linux/interrupt.h>
 #include <linux/io-pgtable.h>
 #include <linux/iopoll.h>
+#include <linux/irqdomain.h>
 #include <linux/jump_label.h>
 #include <linux/module.h>
 #include <linux/msi.h>
@@ -31,6 +32,9 @@
 #include <linux/string_choices.h>
 #include <kunit/visibility.h>
 #include <uapi/linux/iommufd.h>
+#include <linux/irq.h>
+#include <linux/msi.h>
+#include <linux/arm-rmi-cmds.h>
 
 #include "arm-smmu-v3.h"
 #include "../../dma-iommu.h"
@@ -40,7 +44,6 @@ module_param(disable_msipolling, bool, 0444);
 MODULE_PARM_DESC(disable_msipolling,
 	"Disable MSI-based polling for CMD_SYNC completion.");
 
-static const struct iommu_ops arm_smmu_ops;
 static struct iommu_dirty_ops arm_smmu_dirty_ops;
 
 /*
@@ -4374,7 +4377,7 @@ static int arm_smmu_def_domain_type(struct device *dev)
 	return 0;
 }
 
-static const struct iommu_ops arm_smmu_ops = {
+const struct iommu_ops arm_smmu_ops = {
 	.identity_domain	= &arm_smmu_identity_domain,
 	.blocked_domain		= &arm_smmu_blocked_domain,
 	.release_domain		= &arm_smmu_blocked_domain,
@@ -4659,10 +4662,23 @@ static void arm_smmu_free_msis(void *data)
 
 static void arm_smmu_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
 {
+	int max_config_index = GERROR_MSI_INDEX;
 	phys_addr_t doorbell;
 	struct device *dev = msi_desc_to_dev(desc);
 	struct arm_smmu_device *smmu = dev_get_drvdata(dev);
-	phys_addr_t *cfg = arm_smmu_msi_cfg[desc->msi_index];
+	phys_addr_t *cfg;
+
+	if (smmu->features & ARM_SMMU_FEAT_PRI)
+		max_config_index = PRIQ_MSI_INDEX;
+
+	/* save the programmed msi message details */
+	desc->msg = *msg;
+
+	/* Don't try to config for Realm interrupts. */
+	if (desc->msi_index > max_config_index)
+		return;
+
+	cfg = arm_smmu_msi_cfg[desc->msi_index];
 
 	doorbell = (((u64)msg->address_hi) << 32) | msg->address_lo;
 	doorbell &= MSI_CFG0_ADDR_MASK;
@@ -4674,6 +4690,7 @@ static void arm_smmu_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
 
 static void arm_smmu_setup_msis(struct arm_smmu_device *smmu)
 {
+	int irq_index;
 	int ret, nvec = ARM_SMMU_MAX_MSIS;
 	struct device *dev = smmu->dev;
 
@@ -4694,6 +4711,13 @@ static void arm_smmu_setup_msis(struct arm_smmu_device *smmu)
 		return;
 	}
 
+	/*
+	 * Request for realm side non secure interrupts too. Should this be condition
+	 * on non-secure gic?
+	 */
+	if (smmu->features & ARM_SMMU_FEAT_RME_MSI)
+		nvec = nvec * 2;
+
 	/* Allocate MSIs for evtq, gerror and priq. Ignore cmdq */
 	ret = platform_device_msi_init_and_alloc_irqs(dev, nvec, arm_smmu_write_msi_msg);
 	if (ret) {
@@ -4703,7 +4727,19 @@ static void arm_smmu_setup_msis(struct arm_smmu_device *smmu)
 
 	smmu->evtq.q.irq = msi_get_virq(dev, EVTQ_MSI_INDEX);
 	smmu->gerr_irq = msi_get_virq(dev, GERROR_MSI_INDEX);
-	smmu->priq.q.irq = msi_get_virq(dev, PRIQ_MSI_INDEX);
+	irq_index = 2;
+	if (smmu->features & ARM_SMMU_FEAT_PRI) {
+		smmu->priq.q.irq = msi_get_virq(dev, PRIQ_MSI_INDEX);
+		irq_index++;
+	}
+
+	if (smmu->features & ARM_SMMU_FEAT_RME_MSI) {
+		smmu->realm.evtq_irq = msi_get_virq(dev, irq_index++);
+		smmu->realm.gerr_irq = msi_get_virq(dev, irq_index++);
+		// fixme, we should check for pri rmm capability
+		if (smmu->features & ARM_SMMU_FEAT_PRI)
+			smmu->realm.pri_irq = msi_get_virq(dev, irq_index++);
+	}
 
 	/* Add callback to free MSIs on teardown */
 	devm_add_action_or_reset(dev, arm_smmu_free_msis, dev);
@@ -4753,6 +4789,9 @@ static void arm_smmu_setup_unique_irqs(struct arm_smmu_device *smmu)
 			dev_warn(smmu->dev, "no priq irq - PRI will be broken\n");
 		}
 	}
+
+	if (smmu->features & ARM_SMMU_FEAT_RME_IRQ)
+		arm_smmu_setup_realm_irqs(smmu);
 }
 
 static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
@@ -5144,6 +5183,9 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 	smmu->asid_bits = reg & IDR0_ASID16 ? 16 : 8;
 	smmu->vmid_bits = reg & IDR0_VMID16 ? 16 : 8;
 
+	if (reg & IDR0_RME_IMPL)
+		smmu->features |= ARM_SMMU_FEAT_RME;
+
 	/* IDR1 */
 	reg = readl_relaxed(smmu->base + ARM_SMMU_IDR1);
 	if (reg & (IDR1_TABLES_PRESET | IDR1_QUEUES_PRESET | IDR1_REL)) {
@@ -5260,8 +5302,6 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 	if (arm_smmu_sva_supported(smmu))
 		smmu->features |= ARM_SMMU_FEAT_SVA;
 
-	dev_info(smmu->dev, "oas %lu-bit (features 0x%08x)\n",
-		 smmu->oas, smmu->features);
 	return 0;
 }
 
@@ -5506,6 +5546,159 @@ err_remove:
 	return ERR_PTR(ret);
 }
 
+static void __arm_smmu_release_realm_irq_mapping(void *data)
+{
+	irq_dispose_mapping((unsigned long)data);
+}
+
+static struct irq_domain *arm_smmu_get_wired_irq_domain(struct arm_smmu_device *smmu)
+{
+	int irqs[] = {
+		smmu->combined_irq,
+		smmu->evtq.q.irq,
+		smmu->gerr_irq,
+		smmu->priq.q.irq,
+	};
+	struct irq_domain *domain = NULL;
+	struct irq_data *irq_data;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(irqs); i++) {
+		if (irqs[i] <= 0)
+			continue;
+
+		irq_data = irq_get_irq_data(irqs[i]);
+		if (!irq_data || !irq_data->domain)
+			return ERR_PTR(-EINVAL);
+
+		if (domain && domain != irq_data->domain)
+			return ERR_PTR(-EINVAL);
+
+		domain = irq_data->domain;
+	}
+
+	return domain ?: ERR_PTR(-ENXIO);
+}
+
+static int arm_smmu_map_realm_irq(struct arm_smmu_device *smmu,
+				  struct irq_domain *domain,
+				  irq_hw_number_t hwirq, int *irq,
+				  bool *mapping_created)
+{
+	unsigned int virq;
+	bool existing;
+	int ret;
+
+	existing = irq_find_mapping(domain, hwirq);
+	virq = irq_create_mapping(domain, hwirq);
+	if (!virq)
+		return -EINVAL;
+
+	if (!existing) {
+		ret = devm_add_action_or_reset(smmu->dev,
+					       __arm_smmu_release_realm_irq_mapping,
+					       (void *)(unsigned long)virq);
+		if (ret)
+			return ret;
+		if (mapping_created)
+			*mapping_created = true;
+	}
+
+	*irq = virq;
+	return 0;
+}
+
+static void arm_smmu_release_realm_irq_mapping(struct arm_smmu_device *smmu,
+					       int *irq, bool mapping_created)
+{
+	void *data = (void *)(unsigned long)*irq;
+
+	if (mapping_created)
+		devm_release_action(smmu->dev,
+				    __arm_smmu_release_realm_irq_mapping, data);
+
+	*irq = 0;
+}
+
+static int arm_smmu_rmm_device_probe(struct arm_smmu_device *smmu)
+{
+	struct irq_domain *domain;
+	unsigned long flags, irq_cfg;
+	bool gerr_mapping_created = false;
+	bool evtq_mapping_created = false;
+	int ret;
+
+	struct rmi_psmmu_info *psmmu_info __free(free_page) =
+		(struct rmi_psmmu_info *)get_zeroed_page(GFP_KERNEL);
+	if (!psmmu_info)
+		return -ENOMEM;
+
+	if (!rmm_is_active())
+		return -ENODEV;
+
+	if (rmi_psmmu_info(smmu->base_phys, virt_to_phys(psmmu_info)))
+		return -ENODEV;
+
+	flags = psmmu_info->flags;
+	irq_cfg = flags & RMI_PSMMU_IRQCFG_MASK;
+
+	/* Disable RME FEAT because RMM need cmdq sync interrupt*/
+	if (flags & RMI_PSMMU_CMDQSYNC_IRQ_WIRED)
+		return -EINVAL;
+
+	switch (irq_cfg) {
+	case RMI_PSMMU_IRQCFG_IRQ_WIRED:
+		domain = arm_smmu_get_wired_irq_domain(smmu);
+		if (IS_ERR(domain))
+			return dev_err_probe(smmu->dev, PTR_ERR(domain),
+					     "failed to find wired IRQ domain\n");
+
+		ret = arm_smmu_map_realm_irq(smmu, domain,
+					     psmmu_info->gerror_intr_num,
+					     &smmu->realm.gerr_irq,
+					     &gerr_mapping_created);
+		if (ret)
+			goto err_mapping;
+
+		ret = arm_smmu_map_realm_irq(smmu, domain,
+					     psmmu_info->eventq_intr_num,
+					     &smmu->realm.evtq_irq,
+					     &evtq_mapping_created);
+		if (ret)
+			goto err_release_gerr_mapping;
+
+		if ((flags & RMI_PSMMU_PRI) &&
+		    (smmu->features & ARM_SMMU_FEAT_PRI)) {
+			ret = arm_smmu_map_realm_irq(smmu, domain,
+						     psmmu_info->priq_intr_num,
+						     &smmu->realm.pri_irq,
+						     NULL);
+			if (ret)
+				goto err_release_evtq_mapping;
+		}
+		break;
+	case RMI_PSMMU_IRQCFG_IRQ_MSI:
+		smmu->features |= ARM_SMMU_FEAT_RME_MSI;
+		break;
+	case RMI_PSMMU_IRQCFG_IRQ_DISABLED:
+	default:
+		return -ENODEV;
+	}
+
+	smmu->features |= ARM_SMMU_FEAT_RME_IRQ;
+	return 0;
+
+err_release_evtq_mapping:
+	arm_smmu_release_realm_irq_mapping(smmu, &smmu->realm.evtq_irq,
+					   evtq_mapping_created);
+err_release_gerr_mapping:
+	arm_smmu_release_realm_irq_mapping(smmu, &smmu->realm.gerr_irq,
+					   gerr_mapping_created);
+err_mapping:
+	return dev_err_probe(smmu->dev, ret,
+			     "failed to map Realm IRQ\n");
+}
+
 static int arm_smmu_device_probe(struct platform_device *pdev)
 {
 	int irq, ret;
@@ -5540,6 +5733,7 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 	ioaddr = res->start;
+	smmu->base_phys = ioaddr;
 
 	/*
 	 * Don't map the IMPLEMENTATION DEFINED regions, since they may contain
@@ -5580,6 +5774,15 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 	ret = arm_smmu_device_hw_probe(smmu);
 	if (ret)
 		return ret;
+
+	if (arm_smmu_rmm_device_probe(smmu))
+		smmu->features &= ~ARM_SMMU_FEAT_RME;
+#if 0
+		smmu->features |= ARM_SMMU_FEAT_RME_IRQ;
+		smmu->features |= ARM_SMMU_FEAT_RME_MSI;
+#endif
+	dev_info(smmu->dev, "oas %lu-bit (features 0x%08x)\n",
+		 smmu->oas, smmu->features);
 
 	/* Initialise in-memory data structures */
 	ret = arm_smmu_init_structures(smmu);

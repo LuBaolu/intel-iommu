@@ -4,6 +4,10 @@
 #include <linux/completion.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
+#include <linux/rwsem.h>
+#include <uapi/linux/hash_info.h>
+#include <uapi/linux/iommufd.h>
+#include <uapi/linux/pci-tsm-netlink.h>
 
 struct iommufd_viommu_ops;
 struct module;
@@ -69,15 +73,70 @@ struct pci_tsm_ops {
 	 *	  pci_tsm') for follow-on security state transitions from the
 	 *	  LOCKED state
 	 * @unlock: destroy TSM context and return device to UNLOCKED state
+	 * @accept: accept a locked TDI for use, move it to RUN state
 	 *
 	 * Context: @lock and @unlock run under pci_tsm_rwsem held for write to
-	 * sync with TSM unregistration and each other
+	 * sync with TSM unregistration and each other. @accept runs under
+	 * pci_tsm_rwsem held for read. All operations run under the device lock
+	 * for mutual exclusion with driver attach and detach.
 	 */
 	struct_group_tagged(pci_tsm_devsec_ops, devsec_ops,
 		struct pci_tsm *(*lock)(struct tsm_dev *tsm_dev,
 					struct pci_dev *pdev);
 		void (*unlock)(struct pci_tsm *tsm);
+		int (*accept)(struct pci_dev *pdev);
 	);
+
+	int (*refresh_evidence)(struct pci_tsm *tsm,
+				enum pci_tsm_evidence_type type,
+				unsigned long flags, void *nonce,
+				size_t nonce_len);
+};
+
+/**
+ * struct pci_tsm_evidence_object - General PCI/TSM blob descriptor
+ * @data: pointer to the evidence data blob
+ * @len: length of the evidence data blob
+ * @digest: TSM expected digest of the data blob
+ *
+ * There are multiple population and verification models for these blobs
+ * depending on TSM policy. Some examples:
+ * 1/ Host (link) TSM: populates certs and provides a device signed measurement
+ *    transcript PCI_TSM_EVIDENCE_TYPE_MEASUREMENTS
+ * 2/ Guest (devsec) TSM: receives untrusted blobs via guest-to-host shared
+ *    memory protocol and then requests digests of the same via guest-to-host
+ *    encrypted protocol.
+ * The expectation is that all of these blobs are received in an SPDM session
+ * with a signed transcript, however not all TSMs provide the full transcript of
+ * these objects' retrieval and instead require asking the TSM for cached
+ * digests of the blobs over trusted TSM channels.
+ */
+struct pci_tsm_evidence_object {
+	void *data;
+	size_t len;
+	void *digest;
+};
+
+/**
+ * struct pci_tsm_evidence - Retrieved evidence for SPDM session GET commands
+ * @slot: certificate slot used by a link TSM for connect.
+ * @generation: refresh_evidence() invocation detection
+ * @digest_algo: payload size of PCI_TSM_EVIDENCE_FLAG_DIGEST requests
+ * @lock: synchronize dumps vs refresh_evidence()
+ * @obj: array of evidence objects a TSM might populate
+ *
+ * Note @slot selection not applicable for devsec TSMs. By the time the guest is
+ * retrieving the device's certificates the choice of slot was long since
+ * decided by the corresponding link TSM.
+ *
+ * An increment of @generation causes in flight dumps to fail with -EAGAIN.
+ */
+struct pci_tsm_evidence {
+	int slot;
+	int generation;
+	enum hash_algo digest_algo;
+	struct rw_semaphore lock;
+	struct pci_tsm_evidence_object obj[PCI_TSM_EVIDENCE_TYPE_MAX + 1];
 };
 
 /**
@@ -86,6 +145,8 @@ struct pci_tsm_ops {
  * @dsm_dev: PCI Device Security Manager for link operations on @pdev
  * @tsm_dev: PCI TEE Security Manager device for Link Confidentiality or Device
  *	     Function Security operations
+ * @evidence: cached evidence from SPDM session establishment (connect), or
+ *	      TDISP bind (lock)
  *
  * This structure is wrapped by low level TSM driver data and returned by
  * probe()/lock(), it is freed by the corresponding remove()/unlock().
@@ -96,11 +157,19 @@ struct pci_tsm_ops {
  * sub-function (SR-IOV virtual function, or non-function0
  * multifunction-device), or a downstream endpoint (PCIe upstream switch-port as
  * DSM).
+ *
+ * For devsec operations it serves to indicate that the function / TDI has been
+ * locked to a given TSM.
+ *
+ * The common expectation is that there is only ever one TSM, but this is not
+ * enforced. The implementation only enforces that a device can be "connected"
+ * to a TSM instance or "locked" to a different TSM.
  */
 struct pci_tsm {
 	struct pci_dev *pdev;
 	struct pci_dev *dsm_dev;
 	struct tsm_dev *tsm_dev;
+	struct pci_tsm_evidence evidence;
 };
 
 /**
@@ -120,6 +189,44 @@ struct pci_tsm_pf0 {
 	struct completion contexts_drained;
 	bool removing;
 	struct pci_doe_mb *doe_mb;
+};
+
+/**
+ * struct pci_tsm_mmio_entry - an encrypted MMIO range
+ * @res: MMIO address range (typically Guest Physical Address, GPA)
+ * @tsm_offset: Host Physical Address, HPA obfuscation offset added by the TSM.
+ *		Translates report addresses to GPA.
+ */
+struct pci_tsm_mmio_entry {
+	struct resource res;
+	u64 tsm_offset;
+};
+
+struct pci_tsm_mmio {
+	int nr;
+	struct pci_tsm_mmio_entry mmio[] __counted_by(nr);
+};
+
+static inline struct pci_tsm_mmio_entry *
+pci_tsm_mmio_entry(struct pci_tsm_mmio *mmio, int idx)
+{
+	return &mmio->mmio[idx];
+}
+
+static inline struct resource *pci_tsm_mmio_resource(struct pci_tsm_mmio *mmio,
+						     int idx)
+{
+	return &mmio->mmio[idx].res;
+}
+
+/**
+ * struct pci_tsm_devsec - context for tracking private/accepted PCI resources
+ * @base_tsm: generic core "tsm" context
+ * @mmio: encrypted MMIO resources for this assigned device
+ */
+struct pci_tsm_devsec {
+	struct pci_tsm base_tsm;
+	struct pci_tsm_mmio *mmio;
 };
 
 /* physical function0 and capable of 'connect' */
@@ -158,10 +265,13 @@ static inline bool is_pci_tsm_pf0(struct pci_dev *pdev)
 #ifdef CONFIG_PCI_TSM
 int pci_tsm_register(struct tsm_dev *tsm_dev);
 void pci_tsm_unregister(struct tsm_dev *tsm_dev);
+struct tsm_dev *pci_tsm_get_device(struct pci_dev *pdev);
 int pci_tsm_link_constructor(struct pci_dev *pdev, struct pci_tsm *tsm,
 			     struct tsm_dev *tsm_dev);
 int pci_tsm_pf0_constructor(struct pci_dev *pdev, struct pci_tsm_pf0 *tsm,
 			    struct tsm_dev *tsm_dev);
+int pci_tsm_devsec_constructor(struct pci_dev *pdev, struct pci_tsm_devsec *tsm,
+			       struct tsm_dev *tsm_dev);
 void pci_tsm_pf0_destructor(struct pci_tsm_pf0 *tsm);
 int pci_tsm_doe_transfer(struct pci_dev *pdev, u8 type, const void *req,
 			 size_t req_sz, void *resp, size_t resp_sz);
@@ -173,7 +283,13 @@ struct pci_tsm_pf0 *pci_tsm_context_pf0(struct pci_tsm_context *context);
 struct pci_dev *pci_tsm_context_dsm_dev(struct pci_tsm_context *context);
 bool pci_tsm_context_match_device(struct pci_tsm_context *context,
 				  struct pci_dev *pdev);
-struct tsm_dev *pci_tsm_get_device(struct pci_dev *pdev);
+struct pci_tsm_devsec *to_pci_tsm_devsec(struct pci_tsm *tsm);
+void pci_tsm_init_evidence(struct pci_tsm_evidence *evidence, int slot,
+			   enum hash_algo digest_algo);
+int pci_tsm_mmio_setup(struct pci_dev *pdev, struct pci_tsm_mmio *mmio);
+void pci_tsm_mmio_teardown(struct pci_tsm_mmio *mmio);
+struct pci_tsm_mmio *pci_tsm_mmio_alloc(struct pci_dev *pdev);
+int pci_tsm_mmio_free(struct pci_dev *pdev, struct pci_tsm_mmio *mmio);
 #else
 static inline int pci_tsm_register(struct tsm_dev *tsm_dev)
 {
@@ -183,14 +299,14 @@ static inline void pci_tsm_unregister(struct tsm_dev *tsm_dev)
 {
 }
 
-static inline bool pci_tsm_is_configured(struct pci_dev *pdev)
-{
-	return false;
-}
-
 static inline struct tsm_dev *pci_tsm_get_device(struct pci_dev *pdev)
 {
 	return NULL;
+}
+
+static inline bool pci_tsm_is_configured(struct pci_dev *pdev)
+{
+	return false;
 }
 
 static inline struct pci_tsm_context *
@@ -222,4 +338,8 @@ pci_tsm_context_match_device(struct pci_tsm_context *context,
 	return false;
 }
 #endif
+
+/* private: */
+extern struct rw_semaphore pci_tsm_rwsem;
+
 #endif /*__PCI_TSM_H */

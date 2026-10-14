@@ -15,7 +15,9 @@
 
 #include <linux/bug.h>
 #include <linux/compiler.h>
+#include <linux/device.h>
 #include <linux/err.h>
+#include <linux/cc_shared.h>
 #include <linux/mm.h>
 
 #include <asm/mem_encrypt.h>
@@ -33,7 +35,7 @@ int arm64_mem_crypt_ops_register(const struct arm64_mem_crypt_ops *ops)
 
 int set_memory_encrypted(unsigned long addr, int numpages)
 {
-	if (likely(!crypt_ops) || WARN_ON(!PAGE_ALIGNED(addr)))
+	if (likely(!crypt_ops))
 		return 0;
 
 	return crypt_ops->encrypt(addr, numpages);
@@ -42,9 +44,26 @@ EXPORT_SYMBOL_GPL(set_memory_encrypted);
 
 int set_memory_decrypted(unsigned long addr, int numpages)
 {
-	if (likely(!crypt_ops) || WARN_ON(!PAGE_ALIGNED(addr)))
+	if (likely(!crypt_ops))
 		return 0;
 
 	return crypt_ops->decrypt(addr, numpages);
 }
 EXPORT_SYMBOL_GPL(set_memory_decrypted);
+
+size_t arch_cc_shared_granule_size(void)
+{
+	if (likely(!crypt_ops) || !crypt_ops->shared_granule_size)
+		return PAGE_SIZE;
+
+	return crypt_ops->shared_granule_size();
+}
+
+bool force_dma_unencrypted(struct device *dev)
+{
+	if (device_cc_accepted(dev))
+		return false;
+
+	return is_realm_world() || is_protected_kvm_guest();
+}
+EXPORT_SYMBOL_GPL(force_dma_unencrypted);

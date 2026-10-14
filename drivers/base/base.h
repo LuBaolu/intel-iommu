@@ -106,8 +106,13 @@ struct driver_private {
  * @dead: This device is currently either in the process of or has been
  *	  removed from the system. Any asynchronous events scheduled for this
  *	  device should exit without taking any action.
+ * @cc_accepted: track the TEE acceptance state of the device for deferred
+ *		 probing, MMIO mapping type, and SWIOTLB bypass for private memory DMA.
  *
  * Nothing outside of the driver core should ever touch these fields.
+ *
+ * All bitfield flags are manipulated under device_lock() to avoid
+ * read-modify-write collisions.
  */
 struct device_private {
 	struct klist klist_children;
@@ -120,6 +125,10 @@ struct device_private {
 	char *deferred_probe_reason;
 	struct device *device;
 	u8 dead:1;
+#ifdef CONFIG_CONFIDENTIAL_DEVICES
+	u8 cc_accepted:1;
+#endif
+
 };
 #define to_device_private_parent(obj)	\
 	container_of(obj, struct device_private, knode_parent)
@@ -243,6 +252,7 @@ void device_block_probing(void);
 void device_unblock_probing(void);
 void deferred_probe_extend_timeout(void);
 void driver_deferred_probe_trigger(void);
+bool driver_autoprobe(struct device_driver *drv);
 const char *device_get_devnode(const struct device *dev, umode_t *mode,
 			       kuid_t *uid, kgid_t *gid, const char **tmp);
 

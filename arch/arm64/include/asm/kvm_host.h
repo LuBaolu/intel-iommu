@@ -14,6 +14,7 @@
 #include <linux/arm-smccc.h>
 #include <linux/bitmap.h>
 #include <linux/types.h>
+#include <linux/interval_tree.h>
 #include <linux/jump_label.h>
 #include <linux/kvm_types.h>
 #include <linux/maple_tree.h>
@@ -29,6 +30,8 @@
 #include <asm/kvm_asm.h>
 #include <asm/kvm_rmi.h>
 #include <asm/vncr_mapping.h>
+
+#define kvm_file_to_kvm_arch arm64
 
 #define __KVM_HAVE_ARCH_INTC_INITIALIZED
 
@@ -161,6 +164,7 @@ struct kvm_vcpu_ops {
 struct kvm_gfn_range;
 enum kvm_gfn_range_filter;
 struct kvm_s2_fault_desc;
+struct kvm_s2_fault_result;
 
 struct kvm_vm_s2_ops {
 	bool (*vm_age_gfn)(struct kvm *kvm, struct kvm_gfn_range *range);
@@ -172,7 +176,18 @@ struct kvm_vm_s2_ops {
 				      phys_addr_t start, u64 size,
 				      bool may_block,
 				      enum kvm_gfn_range_filter filter);
-	int (*vm_mem_abort)(const struct kvm_s2_fault_desc *s2fd);
+	int (*vm_mem_abort)(const struct kvm_s2_fault_desc *s2fd,
+			    struct kvm_s2_fault_result *result);
+};
+
+/*
+ * Record of a guest stage-2 mapping, storing canonical and nested IPA
+ * ranges. Both ranges have the same size.
+ */
+struct kvm_guest_s2_mapping {
+	struct interval_tree_node canonical;
+	struct interval_tree_node nested;
+	struct kvm_s2_mmu *nested_mmu;
 };
 
 struct kvm_s2_mmu {
@@ -252,6 +267,9 @@ struct kvm_s2_mmu {
 	 */
 	bool	pending_unmap;
 
+	/* Guest s2 mapping records indexed in this MMU's IPA space. */
+	struct rb_root_cached guest_s2_mappings;
+
 	/*
 	 *  0: Nobody is currently using this, check vttbr for validity
 	 * >0: Somebody is actively using this.
@@ -260,6 +278,11 @@ struct kvm_s2_mmu {
 };
 
 struct kvm_arch_memory_slot {
+	/* The RMM handle is usable only while device guest_memfd is active. */
+	struct {
+		unsigned long rmm_vdev;
+		u64 vdev_id;
+	} device;
 };
 
 /**
@@ -364,6 +387,9 @@ struct kvm_arch {
 	struct kvm_s2_mmu **nested_mmus;
 	size_t nested_mmus_size;
 	int nested_mmus_next;
+
+	/* Guest s2 tracking trees access serialization. */
+	spinlock_t guest_s2_tracking_lock;
 
 	/* Interrupt controller */
 	struct vgic_dist	vgic;

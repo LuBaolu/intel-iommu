@@ -469,6 +469,33 @@ arm_smmu_get_viommu_ops(struct device *dev,
 	return smmu->impl_ops->get_viommu_ops(viommu_type);
 }
 
+static int arm_smmu_validate_parent(struct arm_smmu_device *smmu,
+				    struct iommu_domain *parent_domain)
+{
+	if (to_smmu_domain(parent_domain)->smmu != smmu)
+		return -EINVAL;
+	return 0;
+}
+
+static int arm_smmu_viommu_init(struct iommufd_viommu *viommu,
+				struct iommu_domain *parent_domain)
+{
+	struct arm_vsmmu *vsmmu = container_of(viommu, struct arm_vsmmu, core);
+	struct arm_smmu_device *smmu =
+		container_of(viommu->iommu_dev, struct arm_smmu_device, iommu);
+	struct arm_smmu_domain *s2_parent = to_smmu_domain(parent_domain);
+	int ret;
+
+	ret = arm_smmu_validate_parent(smmu, parent_domain);
+	if (ret)
+		return ret;
+
+	vsmmu->smmu = smmu;
+	vsmmu->s2_parent = s2_parent;
+	vsmmu->vmid = s2_parent->s2_cfg.vmid;
+	return 0;
+}
+
 int arm_vsmmu_init(struct iommufd_viommu *viommu, struct device *dev,
 		struct iommu_domain *parent_domain,
 		const struct iommu_user_data *user_data)
@@ -476,15 +503,11 @@ int arm_vsmmu_init(struct iommufd_viommu *viommu, struct device *dev,
 	struct arm_vsmmu *vsmmu = container_of(viommu, struct arm_vsmmu, core);
 	struct arm_smmu_device *smmu =
 		container_of(viommu->iommu_dev, struct arm_smmu_device, iommu);
-	struct arm_smmu_domain *s2_parent = to_smmu_domain(parent_domain);
+	int ret;
 
-	if (s2_parent->smmu != smmu)
-		return -EINVAL;
-
-	vsmmu->smmu = smmu;
-	vsmmu->s2_parent = s2_parent;
-	/* FIXME Move VMID allocation from the S2 domain allocation to here */
-	vsmmu->vmid = s2_parent->s2_cfg.vmid;
+	ret = arm_smmu_viommu_init(viommu, parent_domain);
+	if (ret)
+		return ret;
 
 	if (viommu->type == IOMMU_VIOMMU_TYPE_ARM_SMMUV3)
 		return 0;

@@ -2,6 +2,7 @@
 // Copyright (C) 2019 Arm Ltd.
 
 #include <linux/arm-smccc.h>
+#include <linux/arm-smccc-rhi.h>
 #include <linux/kvm_host.h>
 
 #include <asm/kvm_emulate.h>
@@ -77,6 +78,9 @@ static bool kvm_smccc_default_allowed(u32 func_id)
 	 */
 	case ARM_SMCCC_VERSION_FUNC_ID:
 	case ARM_SMCCC_ARCH_FEATURES_FUNC_ID:
+	case RHI_HOSTCONF_VERSION:
+	case RHI_HOSTCONF_FEATURES:
+	case RHI_HOSTCONF_GET_IPA_CHANGE_ALIGNMENT:
 		return true;
 	default:
 		/* PSCI 0.2 and up is in the 0:0x1f range */
@@ -157,7 +161,15 @@ static int kvm_smccc_filter_insert_reserved(struct kvm *kvm)
 			       GFP_KERNEL_ACCOUNT);
 	if (r)
 		goto out_destroy;
-
+	/*
+	 * Don't forward RHI_HOST_CONF related RHI calls
+	 */
+	r = mtree_insert_range(&kvm->arch.smccc_filter,
+			       RHI_HOSTCONF_VERSION, RHI_HOSTCONF_GET_IPA_CHANGE_ALIGNMENT,
+			       xa_mk_value(KVM_SMCCC_FILTER_HANDLE),
+			       GFP_KERNEL_ACCOUNT);
+	if (r)
+		goto out_destroy;
 	return 0;
 out_destroy:
 	mtree_destroy(&kvm->arch.smccc_filter);
@@ -377,6 +389,15 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 	case ARM_SMCCC_TRNG_RND32:
 	case ARM_SMCCC_TRNG_RND64:
 		return kvm_trng_call(vcpu);
+	case RHI_HOSTCONF_VERSION:
+		val[0] = RHI_HOSTCONF_VER_1_0;
+		break;
+	case RHI_HOSTCONF_FEATURES:
+		val[0] = RHI_HOSTCONF_FEATURE_GET_IPA_CHANGE_ALIGNMENT;
+		break;
+	case RHI_HOSTCONF_GET_IPA_CHANGE_ALIGNMENT:
+		val[0] = PAGE_SIZE;
+		break;
 	default:
 		return kvm_psci_call(vcpu);
 	}

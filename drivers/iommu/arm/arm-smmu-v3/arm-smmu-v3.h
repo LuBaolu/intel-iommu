@@ -13,13 +13,16 @@
 #include <linux/iommufd.h>
 #include <linux/kernel.h>
 #include <linux/mmzone.h>
+#include <linux/refcount.h>
 #include <linux/sizes.h>
 
 struct arm_smmu_device;
 struct arm_vsmmu;
+extern const struct iommu_ops arm_smmu_ops;
 
 /* MMIO registers */
 #define ARM_SMMU_IDR0			0x0
+#define IDR0_RME_IMPL			(1 << 30)
 #define IDR0_ST_LVL			GENMASK(28, 27)
 #define IDR0_ST_LVL_2LVL		1
 #define IDR0_STALL_MODEL		GENMASK(25, 24)
@@ -892,12 +895,19 @@ struct arm_smmu_impl_ops {
 			  const struct iommu_user_data *user_data);
 };
 
+struct arm_smmu_realm {
+	int				gerr_irq;
+	int				evtq_irq;
+	int				pri_irq;
+};
+
 /* An SMMUv3 instance */
 struct arm_smmu_device {
 	struct device			*dev;
 	struct device			*impl_dev;
 	const struct arm_smmu_impl_ops	*impl_ops;
 
+	phys_addr_t			base_phys;
 	void __iomem			*base;
 	void __iomem			*page1;
 
@@ -928,6 +938,9 @@ struct arm_smmu_device {
 #define ARM_SMMU_FEAT_BBML2		(1 << 24)
 #define ARM_SMMU_FEAT_HAFT		(1 << 25)
 #define ARM_SMMU_FEAT_DS		(1 << 26)
+#define ARM_SMMU_FEAT_RME		(1 << 27)
+#define ARM_SMMU_FEAT_RME_IRQ		(1 << 28)
+#define ARM_SMMU_FEAT_RME_MSI		(1 << 29)
 	u32				features;
 
 #define ARM_SMMU_OPT_SKIP_PREFETCH	(1 << 0)
@@ -943,6 +956,8 @@ struct arm_smmu_device {
 
 	int				gerr_irq;
 	int				combined_irq;
+
+	struct arm_smmu_realm		realm;
 
 	unsigned long			oas; /* PA */
 	unsigned long			pgsize_bitmap;
@@ -964,6 +979,7 @@ struct arm_smmu_device {
 
 	struct rb_root			streams;
 	struct mutex			streams_mutex;
+
 };
 
 struct arm_smmu_stream {
@@ -1307,5 +1323,7 @@ static inline int arm_vmaster_report_event(struct arm_smmu_vmaster *vmaster,
 	return -EOPNOTSUPP;
 }
 #endif /* CONFIG_ARM_SMMU_V3_IOMMUFD */
+
+void arm_smmu_setup_realm_irqs(struct arm_smmu_device *smmu);
 
 #endif /* _ARM_SMMU_V3_H */
