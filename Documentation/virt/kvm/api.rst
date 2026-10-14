@@ -6529,6 +6529,10 @@ specified via KVM_CREATE_GUEST_MEMFD.  Currently defined flags:
                                 require noswap and huge=never mount options.
   ============================= ================================================
 
+With USE_RESOURCE, the resource mapping superblock supplies provider
+operations. Callbacks identify folio or PFN backing. PFN providers require
+INIT_SHARED and a VM supporting protected resource mappings; mmap is disabled.
+
 When the KVM MMU performs a PFN lookup to service a guest fault, the fault will
 always be consumed from guest_memfd, regardless of whether it is a shared or a
 private fault (unless in-place conversion is disabled and the backing

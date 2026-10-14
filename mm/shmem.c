@@ -5239,7 +5239,8 @@ static const struct inode_operations shmem_special_inode_operations = {
 };
 
 #ifdef CONFIG_KVM_GUEST_MEMFD
-static void *shmem_gmem_attach(struct file *resource_file)
+static void *shmem_gmem_attach(struct file *resource_file,
+		struct guest_memfd *gmem)
 {
 	struct inode *inode = file_inode(resource_file);
 	struct shmem_sb_info *sbinfo;
