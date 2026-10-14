@@ -6533,6 +6533,12 @@ With USE_RESOURCE, the resource mapping superblock supplies provider
 operations. Callbacks identify folio or PFN backing. PFN providers require
 INIT_SHARED and a VM supporting protected resource mappings; mmap is disabled.
 
+For a VFIO PCI device resource, creation fails with EBUSY if any VFIO BAR
+VMA or dma-buf export exists. This includes unfaulted mappings and mappings
+inherited by another process. Userspace must remove all such mappings before
+creating the device guest_memfd. While the provider is attached, mmap() on
+any VFIO fd for that device fails with EBUSY.
+
 When the KVM MMU performs a PFN lookup to service a guest fault, the fault will
 always be consumed from guest_memfd, regardless of whether it is a shared or a
 private fault (unless in-place conversion is disabled and the backing
