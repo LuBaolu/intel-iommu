@@ -81,6 +81,8 @@ struct vfio_device {
 	struct dentry *debug_root;
 };
 
+struct guest_memfd_provider_operations;
+
 /**
  * struct vfio_device_ops - VFIO bus driver device callbacks
  *
@@ -111,9 +113,11 @@ struct vfio_device {
  *         if none was provided.
  * @dma_unmap: Called when userspace unmaps IOVA from the container
  *             this device is attached to.
+ * @gmem_provider_ops: Optional driver guest_memfd resource operations
  * @device_feature: Optional, fill in the VFIO_DEVICE_FEATURE ioctl
  */
 struct vfio_device_ops {
+	const struct guest_memfd_provider_operations *gmem_provider_ops;
 	char	*name;
 	int	(*init)(struct vfio_device *vdev);
 	void	(*release)(struct vfio_device *vdev);

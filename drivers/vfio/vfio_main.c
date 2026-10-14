@@ -14,8 +14,10 @@
 #include <linux/compat.h>
 #include <linux/device.h>
 #include <linux/fs.h>
+#include <linux/guest_memfd.h>
 #include <linux/idr.h>
 #include <linux/iommu.h>
+#include <linux/kvm.h>
 #if IS_ENABLED(CONFIG_KVM)
 #include <linux/kvm_host.h>
 #endif
@@ -248,9 +250,120 @@ out_free:
 }
 EXPORT_SYMBOL_GPL(_vfio_alloc_device);
 
+struct vfio_gmem_provider {
+	const struct guest_memfd_provider_operations *ops;
+	void *data;
+	struct file *file;
+};
+
+static void *vfio_gmem_provider_attach(struct file *file,
+		struct guest_memfd *gmem)
+{
+	const struct guest_memfd_provider_operations *ops;
+	struct vfio_gmem_provider *provider;
+	struct vfio_device_file *df;
+	void *data;
+
+	/* Reject other file types before interpreting their private_data. */
+	if (file->f_op != &vfio_device_fops)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	df = file->private_data;
+	ops = df->device->ops->gmem_provider_ops;
+	/* Every provider must support attachment and release. */
+	if (!ops || !ops->attach || !ops->release)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	/* VFIO requires PFN lookup, binding and conversion. */
+	if (!ops->get_pfn || !ops->bind || !ops->prepare_conversion ||
+	    !ops->finish_conversion)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	/* VFIO provides PFNs, not folios. */
+	if (ops->alloc_folio || ops->invalidate_folio)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	provider = kzalloc_obj(*provider);
+	if (!provider)
+		return ERR_PTR(-ENOMEM);
+
+	data = ops->attach(file, gmem);
+	if (IS_ERR(data)) {
+		kfree(provider);
+		return data;
+	}
+
+	provider->ops = ops;
+	provider->data = data;
+	/* Pin the driver operations through release(), including its return. */
+	provider->file = get_file(file);
+	return provider;
+}
+
+static void vfio_gmem_provider_release(void *data)
+{
+	struct vfio_gmem_provider *provider = data;
+
+	provider->ops->release(provider->data);
+	fput(provider->file);
+	kfree(provider);
+}
+
+static int vfio_gmem_provider_bind(void *data, u64 offset, u64 size,
+				   struct guest_memfd_device_binding *binding)
+{
+	struct vfio_gmem_provider *provider = data;
+
+	return provider->ops->bind(provider->data, offset, size, binding);
+}
+
+static int vfio_gmem_provider_get_pfn(void *data, u64 offset, unsigned long *pfn)
+{
+	struct vfio_gmem_provider *provider = data;
+
+	return provider->ops->get_pfn(provider->data, offset, pfn);
+}
+
+static int vfio_gmem_provider_prepare_conversion(
+		void *context, const struct guest_memfd_device_request *req)
+{
+	struct vfio_gmem_provider *provider = context;
+
+	return provider->ops->prepare_conversion(provider->data, req);
+}
+
+static void vfio_gmem_provider_finish_conversion(
+		void *context, const struct guest_memfd_device_request *req)
+{
+	struct vfio_gmem_provider *provider = context;
+
+	provider->ops->finish_conversion(provider->data, req);
+}
+
+
+
+static const struct guest_memfd_provider_operations vfio_gmem_provider_ops = {
+	.attach = vfio_gmem_provider_attach,
+	.release = vfio_gmem_provider_release,
+	.bind = vfio_gmem_provider_bind,
+	.get_pfn = vfio_gmem_provider_get_pfn,
+	.prepare_conversion = vfio_gmem_provider_prepare_conversion,
+	.finish_conversion = vfio_gmem_provider_finish_conversion,
+};
+
+static const struct super_operations vfio_fs_super_ops = {
+	.statfs = simple_statfs,
+	.gmem_provider_ops = &vfio_gmem_provider_ops,
+};
+
 static int vfio_fs_init_fs_context(struct fs_context *fc)
 {
-	return init_pseudo(fc, VFIO_MAGIC) ? 0 : -ENOMEM;
+	struct pseudo_fs_context *ctx = init_pseudo(fc, VFIO_MAGIC);
+
+	if (!ctx)
+		return -ENOMEM;
+	ctx->ops = &vfio_fs_super_ops;
+	return 0;
 }
 
 static struct file_system_type vfio_fs_type = {
