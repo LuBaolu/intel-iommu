@@ -1806,7 +1806,23 @@ static vm_fault_t vfio_pci_mmap_page_fault(struct vm_fault *vmf)
 	return vfio_pci_mmap_huge_fault(vmf, 0);
 }
 
+static void vfio_pci_mmap_open(struct vm_area_struct *vma)
+{
+	struct vfio_pci_core_device *vdev = vma->vm_private_data;
+
+	atomic_inc(&vdev->mmap_count);
+}
+
+static void vfio_pci_mmap_close(struct vm_area_struct *vma)
+{
+	struct vfio_pci_core_device *vdev = vma->vm_private_data;
+
+	atomic_dec(&vdev->mmap_count);
+}
+
 static const struct vm_operations_struct vfio_pci_mmap_ops = {
+	.open = vfio_pci_mmap_open,
+	.close = vfio_pci_mmap_close,
 	.fault = vfio_pci_mmap_page_fault,
 #ifdef CONFIG_ARCH_SUPPORTS_HUGE_PFNMAP
 	.huge_fault = vfio_pci_mmap_huge_fault,
@@ -1888,6 +1904,8 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	vm_flags_set(vma, VM_ALLOW_ANY_UNCACHED | VM_IO | VM_PFNMAP |
 			VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_ops = &vfio_pci_mmap_ops;
+	/* Initial mmap does not invoke vm_ops->open(). */
+	vfio_pci_mmap_open(vma);
 
 	return 0;
 }
@@ -2197,6 +2215,7 @@ int vfio_pci_core_init_dev(struct vfio_device *core_vdev)
 		return ret;
 	INIT_LIST_HEAD(&vdev->dmabufs);
 	init_rwsem(&vdev->memory_lock);
+	atomic_set(&vdev->mmap_count, 0);
 	xa_init(&vdev->ctx);
 
 	return 0;

@@ -8,6 +8,7 @@
  * Author: Tom Lyon, pugs@cisco.com
  */
 
+#include <linux/atomic.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
 #include <linux/vfio.h>
@@ -148,6 +149,7 @@ struct vfio_pci_core_device {
 	struct vfio_pci_core_device	*sriov_pf_core_dev;
 	struct notifier_block	nb;
 	struct rw_semaphore	memory_lock;
+	atomic_t		mmap_count;
 	struct list_head	dmabufs;
 };
 
