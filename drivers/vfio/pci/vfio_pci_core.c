@@ -1713,7 +1713,10 @@ static void vfio_pci_zap_bars(struct vfio_pci_core_device *vdev)
 	loff_t end = VFIO_PCI_INDEX_TO_OFFSET(VFIO_PCI_ROM_REGION_INDEX);
 	loff_t len = end - start;
 
-	unmap_mapping_range(core_vdev->inode->i_mapping, start, len, true);
+	/* An attached provider excludes every VFIO BAR VMA. */
+	if (!vdev->gmem)
+		unmap_mapping_range(core_vdev->inode->i_mapping, start, len, true);
+	vfio_pci_gmem_invalidate(vdev);
 }
 
 void vfio_pci_zap_and_down_write_memory_lock(struct vfio_pci_core_device *vdev)
@@ -1837,6 +1840,10 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	unsigned int index;
 	u64 phys_len, req_len, pgoff, req_start;
 	void __iomem *bar_io;
+
+	guard(rwsem_read)(&vdev->memory_lock);
+	if (vdev->gmem)
+		return -EBUSY;
 
 	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
 

@@ -306,6 +306,16 @@ int vfio_pci_core_feature_dma_buf(struct vfio_pci_core_device *vdev, u32 flags,
 	/* dma_buf_put() now frees priv */
 	INIT_LIST_HEAD(&priv->dmabufs_elm);
 	down_write(&vdev->memory_lock);
+	/*
+	 * dma-buf consumers bypass guest_memfd range access checks, and their
+	 * mappings are not revoked by conversion to private memory. Exclude
+	 * exports while attached; memory_lock serializes this with attachment.
+	 */
+	if (vdev->gmem) {
+		up_write(&vdev->memory_lock);
+		dma_buf_put(priv->dmabuf);
+		return -EBUSY;
+	}
 	dma_resv_lock(priv->dmabuf->resv, NULL);
 	priv->revoked = !__vfio_pci_memory_enabled(vdev);
 	list_add_tail(&priv->dmabufs_elm, &vdev->dmabufs);

@@ -55,6 +55,17 @@ config VFIO_PCI_ZDEV_KVM
 
 	  To enable s390x KVM vfio-pci extensions, say Y.
 
+config VFIO_PCI_GMEM
+	bool "VFIO PCI device guest_memfd resource provider"
+	depends on VFIO_PCI && IOMMUFD && KVM
+	depends on KVM_GUEST_MEMFD
+	help
+	  Allow the VFIO PCI device fd to provide BAR PFNs to guest_memfd,
+	  including confidential-device range conversion through its
+	  existing IOMMUFD vDEVICE. This requires a capable TSM backend.
+	  Shared access is revoked before private range mapping and is
+	  restored only after private mappings and device state permit it.
+
 config VFIO_PCI_DMABUF
 	def_bool y if VFIO_PCI_CORE && PCI_P2PDMA && DMA_SHARED_BUFFER
 
