@@ -47,6 +47,8 @@ struct guest_memfd {
  * @get_pfn: Resolve a shared resource offset without taking a folio reference.
  * @prepare_conversion: Prepare protected PFN conversion; NULL request shares.
  * @finish_conversion: Finish conversion after attribute publication.
+ * @detach: Disable new bindings and private requests before final cleanup.
+ *          Stop and drain callbacks that access the VM before returning.
  *
  * Provider operations supply exactly one of alloc_folio() and get_pfn().
  * PFN providers start shared and require the bind and conversion callbacks
@@ -65,6 +67,7 @@ struct guest_memfd_provider_operations {
 		const struct guest_memfd_device_request *req);
 	void (*finish_conversion)(void *provider,
 		const struct guest_memfd_device_request *req);
+	void (*detach)(void *provider);
 };
 
 #endif /* _LINUX_GUEST_MEMFD_H */
