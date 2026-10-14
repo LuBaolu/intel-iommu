@@ -9,6 +9,12 @@ struct folio;
 struct mempolicy;
 struct kvm;
 
+struct guest_memfd_device_request {
+	u64 gpa;
+	u64 pa;
+	u64 vdev_id;
+};
+
 /* Binding data stays valid only while the provider is active. */
 struct guest_memfd_device_binding {
 	/* Architecture-specific mapping owner, e.g. an RMM vDEVICE handle. */
@@ -33,6 +39,8 @@ struct guest_memfd {
  * @invalidate_folio: Notify the folio provider before releasing a folio.
  * @bind: Validate a PFN interval and return its protected mapping owner.
  * @get_pfn: Resolve a shared resource offset without taking a folio reference.
+ * @prepare_conversion: Prepare protected PFN conversion; NULL request shares.
+ * @finish_conversion: Finish conversion after attribute publication.
  *
  * Provider operations supply exactly one of alloc_folio() and get_pfn().
  * PFN providers start shared and require the bind and conversion callbacks
@@ -47,6 +55,10 @@ struct guest_memfd_provider_operations {
 	int (*bind)(void *provider, u64 offset, u64 size,
 		struct guest_memfd_device_binding *binding);
 	int (*get_pfn)(void *provider, u64 offset, unsigned long *pfn);
+	int (*prepare_conversion)(void *provider,
+		const struct guest_memfd_device_request *req);
+	void (*finish_conversion)(void *provider,
+		const struct guest_memfd_device_request *req);
 };
 
 #endif /* _LINUX_GUEST_MEMFD_H */

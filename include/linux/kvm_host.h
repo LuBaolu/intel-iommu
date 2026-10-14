@@ -2614,6 +2614,11 @@ bool kvm_gmem_range_has_attributes(struct kvm_memory_slot *slot, gfn_t start,
 bool kvm_arch_gmem_device_supported(struct kvm *kvm);
 void kvm_arch_gmem_device_bind(struct kvm_memory_slot *slot,
 		const struct guest_memfd_device_binding *binding);
+int kvm_arch_gmem_device_map(struct kvm *kvm,
+		const struct kvm_memory_slot *slot,
+		u64 gpa, u64 size, u64 pa);
+int kvm_arch_gmem_device_unmap(struct kvm *kvm, u64 gpa, u64 size);
+int kvm_gmem_device_map(struct kvm *kvm, u64 gpa, u64 size, u64 pa, u64 vdev_id);
 int kvm_gmem_set_attributes(struct kvm_memory_slot *slot, gfn_t start,
 			    gfn_t end, u64 attributes);
 bool kvm_arch_supports_gmem_init_shared(struct kvm *kvm);
