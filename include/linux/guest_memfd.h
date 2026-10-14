@@ -26,6 +26,12 @@ struct guest_memfd {
 	struct kvm *kvm;
 	u64 size;
 	u64 flags;
+	struct file *gmem_file;
+
+	/* Revoke shared guest translations synchronously. */
+	void (*invalidate)(struct guest_memfd *gmem);
+	bool (*has_private)(struct guest_memfd *gmem);
+	bool (*host_accessible)(struct guest_memfd *gmem, u64 offset, u64 size);
 };
 
 /**

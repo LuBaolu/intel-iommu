@@ -1066,6 +1066,118 @@ int __weak kvm_arch_gmem_device_unmap(struct kvm *kvm, u64 gpa, u64 size)
 	return -EOPNOTSUPP;
 }
 
+static bool gmem_device_host_accessible(struct guest_memfd *gdev,
+		u64 offset, u64 size)
+{
+	struct file *file = READ_ONCE(gdev->gmem_file);
+	struct inode *inode;
+	pgoff_t first, last;
+	bool shared;
+
+	if (!file)
+		return false;
+
+	/* Unwrapped BAR offsets have no private guest_memfd mappings. */
+	if (offset >= gdev->size)
+		return true;
+
+	size = min(size, gdev->size - offset);
+	if (!size)
+		return false;
+
+	first = offset >> PAGE_SHIFT;
+	last = ((offset + size - 1) >> PAGE_SHIFT) + 1;
+	inode = file_inode(file);
+	/*
+	 * Keep guest_memfd attributes stable against conversion while checking
+	 * host access. This check only reads attributes, so a shared lock lets
+	 * other access checks run concurrently.
+	 *
+	 * VFIO callers hold memory_lock, but conversion takes the invalidate
+	 * lock exclusively before taking memory_lock for writing.
+	 * Waiting here could deadlock with conversion. Try the shared lock and
+	 * deny access if it cannot be acquired.
+	 */
+	if (!filemap_invalidate_trylock_shared(inode->i_mapping))
+		return false;
+
+	shared = __kvm_gmem_range_has_attributes(inode, first, last - first, 0);
+	filemap_invalidate_unlock_shared(inode->i_mapping);
+	return shared;
+}
+
+/**
+ * gmem_device_invalidate() - invalidate shared guest mappings of device memory
+ * @gdev: device guest_memfd whose provider is revoking access
+ *
+ * VFIO invokes this callback when zapping BAR mappings. Removing host BAR
+ * mappings alone leaves guest stage-2 mappings intact, so unmap the shared
+ * ranges in memslots backed by this guest_memfd and flush guest TLBs as needed.
+ * Advance the MMU invalidation sequence so faults that obtained a provider PFN
+ * before revocation retry instead of installing a stale mapping.
+ *
+ * SRCU protects memslot traversal, and the KVM MMU lock serializes unmapping
+ * with guest faults. Do not acquire the inode invalidate lock: conversion may
+ * already hold it, and VFIO callers hold memory_lock in the reverse order.
+ *
+ * Caller holds the provider memory lock to exclude new provider PFN
+ * lookups during invalidation.
+ */
+static void gmem_device_invalidate(struct guest_memfd *gdev)
+{
+	struct file *file = gdev->gmem_file;
+	struct kvm *kvm = gdev->kvm;
+	struct kvm_memory_slot *slot;
+	struct kvm_memslots *slots;
+	int srcu_idx, bkt, as;
+	bool flush = false, found_memslot = false;
+
+	if (!file)
+		return;
+
+	srcu_idx = srcu_read_lock(&kvm->srcu);
+	KVM_MMU_LOCK(kvm);
+
+	for (as = 0; as < kvm_arch_nr_memslot_as_ids(kvm); as++) {
+		slots = __kvm_memslots(kvm, as);
+		kvm_for_each_memslot(slot, bkt, slots) {
+			struct kvm_gfn_range range = {
+				.slot = slot,
+				.start = slot->base_gfn,
+				.end = slot->base_gfn + slot->npages,
+				.attr_filter = KVM_FILTER_SHARED,
+				.may_block = false,
+			};
+
+			if (READ_ONCE(slot->gmem.file) != file)
+				continue;
+
+			if (!found_memslot) {
+				found_memslot = true;
+				kvm_mmu_invalidate_start(kvm);
+			}
+
+			flush |= kvm_mmu_unmap_gfn_range(kvm, &range);
+		}
+	}
+	if (flush)
+		kvm_flush_remote_tlbs(kvm);
+
+	if (found_memslot)
+		kvm_mmu_invalidate_end(kvm);
+
+	KVM_MMU_UNLOCK(kvm);
+	srcu_read_unlock(&kvm->srcu, srcu_idx);
+}
+
+/* The attribute tree owns mapping state; this summary is read under provider locks. */
+static bool gmem_device_has_private(struct guest_memfd *gdev)
+{
+	struct gmem_inode *gi = container_of(gdev, struct gmem_inode, device);
+
+	return READ_ONCE(gi->device_has_private);
+}
+
 static void kvm_gmem_device_update_private(struct gmem_inode *gi)
 {
 	MA_STATE(mas, &gi->attributes, 0, 0);
@@ -1291,6 +1403,9 @@ static int kvm_gmem_attach_resource(struct kvm *kvm,
 	gi->device.size = i_size_read(inode);
 	/* The provider needs creation flags before attachment is published. */
 	gi->device.flags = gi->flags;
+	gi->device.invalidate = gmem_device_invalidate;
+	gi->device.host_accessible = gmem_device_host_accessible;
+	gi->device.has_private = gmem_device_has_private;
 	provider = ops->attach(resource_file, &gi->device);
 	if (IS_ERR(provider)) {
 		ret = PTR_ERR(provider);
@@ -1359,6 +1474,7 @@ static int __kvm_gmem_create(struct kvm *kvm, loff_t size, u64 flags, int resour
 	xa_init(&f->bindings);
 	list_add(&f->entry, &GMEM_I(inode)->gmem_file_list);
 
+	WRITE_ONCE(GMEM_I(inode)->device.gmem_file, file);
 	fd_install(fd, file);
 	return fd;
 
@@ -1743,6 +1859,7 @@ static struct inode *kvm_gmem_alloc_inode(struct super_block *sb)
 	gi->provider = NULL;
 	gi->provider_ops = NULL;
 	gi->device_has_private = false;
+	memset(&gi->device, 0, sizeof(gi->device));
 	INIT_LIST_HEAD(&gi->gmem_file_list);
 	return &gi->vfs_inode;
 }
