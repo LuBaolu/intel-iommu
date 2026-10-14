@@ -1696,6 +1696,10 @@ static int kvm_prepare_memory_region(struct kvm *kvm,
 	}
 
 	r = kvm_arch_prepare_memory_region(kvm, old, new, change);
+	if (!r && change == KVM_MR_DELETE) {
+		if (old->flags & KVM_MEM_GUEST_MEMFD)
+			r = kvm_gmem_prepare_memslot_delete(old);
+	}
 
 	/* Free the bitmap on failure if it was allocated above. */
 	if (r && new && new->dirty_bitmap && (!old || !old->dirty_bitmap))

@@ -1307,6 +1307,58 @@ out:
 	return ret;
 }
 
+/**
+ * kvm_gmem_prepare_memslot_delete() - remove guest_memfd mappings before deletion
+ * @slot: original guest_memfd memslot being removed
+ *
+ * The caller has replaced the active slot with an entry marked
+ * KVM_MEMSLOT_INVALID, preventing new guest faults from creating mappings.
+ * Remove private device mappings, then invalidate the remaining guest_memfd
+ * mappings, including shared mappings.
+ *
+ * Perform this cleanup while the guest_memfd binding still provides the
+ * file-offset-to-GPA translation needed to locate the guest mappings.
+ * The device provider remains attached until guest_memfd close.
+ *
+ * Caller holds slots_lock.
+ * Return: 0 on success or a negative error code.
+ */
+int kvm_gmem_prepare_memslot_delete(const struct kvm_memory_slot *slot)
+{
+	struct file *file = READ_ONCE(slot->gmem.file);
+	pgoff_t start = slot->gmem.pgoff;
+	pgoff_t end = start + slot->npages;
+	struct inode *inode;
+	int ret;
+
+	/* slots_lock keeps the bindings alive until file release can finish. */
+	file = get_file_active(&file);
+	if (!file) {
+		/* Let .release drain the bindings before deletion can discard them. */
+		if (READ_ONCE(slot->gmem.file))
+			return -EBUSY;
+		return 0;
+	}
+
+	inode = file_inode(file);
+	if (gmem_provider_has_pfns(GMEM_I(inode))) {
+		ret = kvm_gmem_device_convert(inode, start, slot->npages, NULL, NULL);
+		if (ret)
+			goto out;
+	}
+
+	filemap_invalidate_lock(inode->i_mapping);
+	__kvm_gmem_invalidate_start(file->private_data, start, end,
+				    kvm_gmem_get_all_gfns_filter(inode));
+	__kvm_gmem_invalidate_end(file->private_data, start, end);
+	filemap_invalidate_unlock(inode->i_mapping);
+	ret = 0;
+out:
+	fput(file);
+	return ret;
+}
+
+
 int kvm_gmem_device_map(struct kvm *kvm, u64 gpa, u64 size, u64 pa, u64 vdev_id)
 {
 	struct guest_memfd_device_request req = { gpa, pa, vdev_id };
@@ -1608,11 +1660,19 @@ out_put:
 	return r;
 }
 
-static void __kvm_gmem_unbind(struct kvm_memory_slot *slot, struct gmem_file *f)
+static void __kvm_gmem_unbind(struct kvm_memory_slot *slot, struct file *file)
 {
+	struct gmem_file *f = file->private_data;
 	unsigned long start = slot->gmem.pgoff;
 	unsigned long end = start + slot->npages;
 
+	/*
+	 * Unmap this slot's guest mappings before removing it from f->bindings.
+	 * The invalidation helper walks f->bindings to find the slots to unmap.
+	 */
+	__kvm_gmem_invalidate_start(f, start, end,
+				    kvm_gmem_get_all_gfns_filter(file_inode(file)));
+	__kvm_gmem_invalidate_end(f, start, end);
 	xa_store_range(&f->bindings, start, end - 1, NULL, GFP_KERNEL);
 
 	/*
@@ -1644,12 +1704,16 @@ void kvm_gmem_unbind(struct kvm_memory_slot *slot)
 	 * until the caller drops slots_lock.
 	 */
 	if (!file) {
-		__kvm_gmem_unbind(slot, slot->gmem.file->private_data);
+		struct file *closing_file = slot->gmem.file;
+
+		filemap_invalidate_lock(closing_file->f_mapping);
+		__kvm_gmem_unbind(slot, closing_file);
+		filemap_invalidate_unlock(closing_file->f_mapping);
 		return;
 	}
 
 	filemap_invalidate_lock(file->f_mapping);
-	__kvm_gmem_unbind(slot, file->private_data);
+	__kvm_gmem_unbind(slot, file);
 	filemap_invalidate_unlock(file->f_mapping);
 }
 
