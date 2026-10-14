@@ -1,0 +1,75 @@
+KVM/VFIO: guest_memfd support for device MMIO resources
+
+This series adds a guest_memfd device-resource framework for exposing PCI
+BAR memory to guests. The intended use is confidential device assignment,
+where KVM needs to coordinate private device mappings with shared access
+through VFIO. The Arm CCA backend is provided separately; these patches
+contain the guest_memfd, VFIO and IOMMUFD interfaces it uses.
+
+The guest_memfd framework and Arm CCA backend are available together at:
+
+  https://git.gitlab.arm.com/linux-arm/linux-cca.git cca/topics/cca-da-gmem-backend
+
+Userspace creates a device-backed guest_memfd using the ordinary VFIO
+device fd as resource_fd, with GUEST_MEMFD_FLAG_USE_RESOURCE and
+GUEST_MEMFD_FLAG_INIT_SHARED. The resource mapping superblock selects its
+provider; get_pfn identifies PFN-backed memory. Eligible BAR intervals are
+registered as guest_memfd memslots. File offsets use the existing VFIO
+region-offset namespace, allowing one guest_memfd to cover multiple BAR
+intervals. The device-backed guest_memfd fd rejects mmap and fallocate;
+shared guest faults obtain bare BAR PFNs from the provider instead of
+resolving the memslot HVA or allocating folios.
+
+IOMMUFD resolves and pins the device's existing vDEVICE after its backend
+validates the VM association. Its MMIO mutex coordinates conversion and
+device state changes. VFIO supplies BAR PFNs, validates eligible ranges
+and excludes dma-buf exports while a guest_memfd provider is attached.
+
+Without GUEST_MEMFD_FLAG_MMAP, attachment rejects existing VFIO BAR VMAs,
+and new VFIO mmap calls. With the flag, existing and new BAR VMAs are
+allowed through the VFIO fd. Attachment invalidates existing BAR mappings,
+including huge mappings. Subsequent faults use base-page mappings so each
+page's shared-range attributes are checked separately. Mapping the
+PFN-backed guest_memfd fd remains disabled (We can decide on this later).
+
+VFIO BAR read/write, ioeventfd and userspace mapping faults check the
+requested range's guest_memfd attributes.
+
+This series depends on:
+* Ackerley Tng's "Allow guest_memfd to be created using a resource (pool)
+  fd" RFC, which provides the tmpfs resource-provider API:
+  https://lore.kernel.org/all/20260925-gmem-tmpfs-backend-v1-0-d36159822d18@google.com/
+* The IOMMUFD/TSM series, which provides the vIOMMU and vDEVICE interfaces:
+  https://lore.kernel.org/all/20261008055955.4014342-1-aneesh.kumar@kernel.org/
+
+Notes:
+* Codex assisted with implementation, review and series organization.
+
+* Changes from v1:
+https://lore.kernel.org/all/20261010072504.536230-1-aneesh.kumar@kernel.org
+* Require GUEST_MEMFD_FLAG_MMAP to allow VFIO BAR mmap while a provider is
+  attached; disable it by default.
+* Use the common guest_memfd_provider_operations for folio and PFN
+  providers. Select operations through the resource mapping superblock
+  and forward VFIO operations to the device driver.
+
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: Alex Williamson <alex@shazbot.org>
+Cc: David Woodhouse <dwmw2@infradead.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: "Joerg Roedel (AMD)" <joro@8bytes.org>
+Cc: Kevin Tian <kevin.tian@intel.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Robin Murphy <robin.murphy@arm.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Alexey Kardashevskiy <aik@amd.com>
+Cc: Xu Yilun <yilun.xu@linux.intel.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com> 
+Cc: Suzuki K Poulose <suzuki.poulose@arm.com>
+Cc: Steven Price <steven.price@arm.com>
+Cc: Fred Griffoul <griffoul@gmail.com> 
+Cc: iommu@lists.linux.dev
+Cc: kvm@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
