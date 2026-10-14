@@ -7,10 +7,12 @@
 #define __LINUX_IOMMUFD_H
 
 #include <linux/bits.h>
+#include <linux/cleanup.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/iommu.h>
 #include <linux/refcount.h>
+#include <linux/mutex.h>
 #include <linux/types.h>
 #include <linux/xarray.h>
 #include <uapi/linux/iommufd.h>
@@ -26,6 +28,7 @@ struct iommufd_device;
 struct iommufd_viommu_ops;
 struct tsm_dev;
 struct page;
+struct kvm;
 struct tsm_guest_req_info;
 
 enum iommufd_object_type {
@@ -72,6 +75,19 @@ int iommufd_device_attach(struct iommufd_device *idev, ioasid_t pasid,
 int iommufd_device_replace(struct iommufd_device *idev, ioasid_t pasid,
 			   u32 *pt_id);
 void iommufd_device_detach(struct iommufd_device *idev, ioasid_t pasid);
+
+/* The returned opaque vDEVICE pins its IOMMUFD context and physical owner. */
+struct iommufd_vdevice *
+iommufd_device_attach_mmio_provider(struct iommufd_device *idev,
+		struct kvm *kvm, void *data,
+		bool (*has_private_mmio)(void *),
+		unsigned long *owner);
+void iommufd_vdevice_detach_mmio_provider(struct iommufd_vdevice *vdev);
+void iommufd_vdevice_mmio_lock(struct iommufd_vdevice *vdev);
+void iommufd_vdevice_mmio_unlock(struct iommufd_vdevice *vdev);
+DEFINE_GUARD(iommufd_vdevice_mmio, struct iommufd_vdevice *,
+	     iommufd_vdevice_mmio_lock(_T), iommufd_vdevice_mmio_unlock(_T))
+bool iommufd_vdevice_has_private_mmio(struct iommufd_vdevice *vdev);
 
 struct iommufd_ctx *iommufd_device_to_ictx(struct iommufd_device *idev);
 u32 iommufd_device_to_id(struct iommufd_device *idev);
@@ -130,6 +146,12 @@ struct iommufd_vdevice {
 	 */
 	u64 virt_id;
 
+	/* Serializes provider attachment and conversion. */
+	struct mutex mmio_lock;
+	/* Attached provider and callbacks, protected by mmio_lock until detach. */
+	void *mmio_provider_data;
+	bool (*has_private_mmio)(void *data);
+
 	/* Guest TSM requests accepted by this vdevice; set by vdevice_init(). */
 	u64 tsm_req_op_mask;
 	u32 tsm_tvm_arch;
@@ -187,6 +209,7 @@ struct iommufd_hw_queue {
  *                include/uapi/linux/iommufd.h)
  *                If driver has a deinit function to revert what vdevice_init op
  *                does, it should set it to the @vdev->destroy function pointer
+ * @vdevice_get_mmio_owner: Validate the VM and return its MMIO owner.
  * @vdevice_tsm_req: Forward a guest TSM request to a driver-owned vDEVICE
  * @get_hw_queue_size: Get the size of a driver-defined HW queue structure for a
  *                     given @viommu corresponding to @queue_type. Driver should
@@ -218,6 +241,9 @@ struct iommufd_viommu_ops {
 		const struct iommu_user_data *user_data);
 	int (*cache_invalidate)(struct iommufd_viommu *viommu,
 				struct iommu_user_data_array *array);
+	/* Owner lookup runs with vdevice->mmio_lock held. */
+	int (*vdevice_get_mmio_owner)(struct iommufd_vdevice *vdev,
+		struct kvm *kvm, unsigned long *owner);
 	const size_t vdevice_size;
 	int (*vdevice_init)(struct iommufd_vdevice *vdev);
 	ssize_t (*vdevice_tsm_req)(struct iommufd_vdevice *vdev,
