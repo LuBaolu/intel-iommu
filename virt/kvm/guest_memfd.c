@@ -340,6 +340,7 @@ static void kvm_gmem_invalidate_end(struct inode *inode, pgoff_t start,
 static int kvm_gmem_device_convert(struct inode *inode, pgoff_t start,
 		pgoff_t nr_pages, const struct guest_memfd_device_request *req,
 		const struct kvm_memory_slot *slot);
+static void kvm_gmem_device_close(struct inode *inode);
 
 static long kvm_gmem_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 {
@@ -461,6 +462,9 @@ static int kvm_gmem_release(struct inode *inode, struct file *file)
 	mutex_lock(&kvm->slots_lock);
 
 	filemap_invalidate_lock(inode->i_mapping);
+
+	if (gmem_provider_has_pfns(GMEM_I(inode)))
+		kvm_gmem_device_close(inode);
 
 	xa_for_each(&f->bindings, index, slot)
 		WRITE_ONCE(slot->gmem.file, NULL);
@@ -1339,6 +1343,23 @@ int kvm_gmem_device_map(struct kvm *kvm, u64 gpa, u64 size, u64 pa, u64 vdev_id)
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_gmem_device_map);
 
+static void kvm_gmem_device_close(struct inode *inode)
+{
+	struct gmem_inode *gi = GMEM_I(inode);
+	int ret;
+
+	gi->provider_ops->detach(gi->provider);
+	ret = gi->provider_ops->prepare_conversion(gi->provider, NULL);
+	if (!ret) {
+		ret = kvm_gmem_device_make_shared(inode, 0,
+						  i_size_read(inode) >> PAGE_SHIFT);
+		if (!ret)
+			WRITE_ONCE(gi->device_has_private, false);
+		gi->provider_ops->finish_conversion(gi->provider, NULL);
+	}
+	WRITE_ONCE(gi->device.gmem_file, NULL);
+}
+
 static int kvm_gmem_validate_provider(struct kvm *kvm,
 		struct gmem_inode *gi,
 		const struct guest_memfd_provider_operations *ops)
@@ -1355,14 +1376,14 @@ static int kvm_gmem_validate_provider(struct kvm *kvm,
 	if (!ops->get_pfn) {
 		/* PFN-specific callbacks are invalid for folio providers. */
 		if (ops->bind || ops->prepare_conversion ||
-		    ops->finish_conversion)
+		    ops->finish_conversion || ops->detach)
 			return -EOPNOTSUPP;
 		return 0;
 	}
 
-	/* PFN providers must support binding and conversion. */
+	/* PFN providers must support binding, conversion and detachment. */
 	if (!ops->bind || !ops->prepare_conversion ||
-	    !ops->finish_conversion)
+	    !ops->finish_conversion || !ops->detach)
 		return -EOPNOTSUPP;
 
 	/* PFN providers do not manage folios. */

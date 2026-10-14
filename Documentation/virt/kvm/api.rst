@@ -6537,7 +6537,8 @@ For a VFIO PCI device resource, creation fails with EBUSY if any VFIO BAR
 VMA or dma-buf export exists. This includes unfaulted mappings and mappings
 inherited by another process. Userspace must remove all such mappings before
 creating the device guest_memfd. While the provider is attached, mmap() on
-any VFIO fd for that device fails with EBUSY.
+any VFIO fd for that device fails with EBUSY. Closing the guest_memfd releases
+the provider once its last reference is dropped and cleanup completes.
 
 When the KVM MMU performs a PFN lookup to service a guest fault, the fault will
 always be consumed from guest_memfd, regardless of whether it is a shared or a
