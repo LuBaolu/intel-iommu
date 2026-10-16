@@ -6514,8 +6514,9 @@ The capability KVM_CAP_GUEST_MEMFD_FLAGS enumerates the `flags` that can be
 specified via KVM_CREATE_GUEST_MEMFD.  Currently defined flags:
 
   ============================= ================================================
-  GUEST_MEMFD_FLAG_MMAP         Enable using mmap() on the guest_memfd file
-                                descriptor.
+  GUEST_MEMFD_FLAG_MMAP         Enable userspace mappings. For VFIO PCI
+                                resources, mappings use the resource fd;
+                                otherwise they use the guest_memfd fd.
   GUEST_MEMFD_FLAG_INIT_SHARED  Make all memory in the file shared during
                                 KVM_CREATE_GUEST_MEMFD (memory files created
                                 without INIT_SHARED will be marked private).
@@ -6531,13 +6532,23 @@ specified via KVM_CREATE_GUEST_MEMFD.  Currently defined flags:
 
 With USE_RESOURCE, the resource mapping superblock supplies provider
 operations. Callbacks identify folio or PFN backing. PFN providers require
-INIT_SHARED and a VM supporting protected resource mappings; mmap is disabled.
+INIT_SHARED and a VM supporting protected resource mappings. Mapping a
+PFN-backed guest_memfd fd is not supported.
 
-For a VFIO PCI device resource, creation fails with EBUSY if any VFIO BAR
-VMA or dma-buf export exists. This includes unfaulted mappings and mappings
-inherited by another process. Userspace must remove all such mappings before
-creating the device guest_memfd. While the provider is attached, mmap() on
-any VFIO fd for that device fails with EBUSY. Closing the guest_memfd releases
+For a VFIO PCI device resource, creation fails with EBUSY if another provider
+or any dma-buf export exists. Without GUEST_MEMFD_FLAG_MMAP, creation also fails
+with EBUSY if any VFIO BAR VMA exists, including unfaulted or inherited VMAs.
+While attached without MMAP, mmap() on any VFIO fd for the device fails with
+EBUSY. With MMAP, existing BAR VMAs and new VFIO mmap() calls are allowed.
+Attachment revokes existing BAR translations, including huge mappings. While
+attached, faults use base-page mappings and check the guest_memfd attributes
+for the faulting page.
+
+Conversion to private memory revokes VFIO BAR translations before delegation.
+Access to a private page raises SIGBUS; conversion back to shared permits new
+faults on the existing VMA. Reset, power and memory-decode changes also revoke
+BAR translations. Detachment revokes translations and blocks faults until
+provider release clears the association. Closing the guest_memfd releases
 the provider once its last reference is dropped and cleanup completes.
 
 When the KVM MMU performs a PFN lookup to service a guest fault, the fault will

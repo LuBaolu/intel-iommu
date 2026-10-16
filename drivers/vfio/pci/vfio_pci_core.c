@@ -1713,9 +1713,7 @@ static void vfio_pci_zap_bars(struct vfio_pci_core_device *vdev)
 	loff_t end = VFIO_PCI_INDEX_TO_OFFSET(VFIO_PCI_ROM_REGION_INDEX);
 	loff_t len = end - start;
 
-	/* An attached provider excludes every VFIO BAR VMA. */
-	if (!vdev->gmem)
-		unmap_mapping_range(core_vdev->inode->i_mapping, start, len, true);
+	unmap_mapping_range(core_vdev->inode->i_mapping, start, len, true);
 	vfio_pci_gmem_invalidate(vdev);
 }
 
@@ -1764,6 +1762,15 @@ vm_fault_t vfio_pci_vmf_insert_pfn(struct vfio_pci_core_device *vdev,
 	lockdep_assert_held_read(&vdev->memory_lock);
 
 	if (vdev->pm_runtime_engaged || !__vfio_pci_memory_enabled(vdev))
+		return VM_FAULT_SIGBUS;
+
+	/* Check each page separately while guest_memfd controls BAR access. */
+	if (order && vdev->gmem)
+		return VM_FAULT_FALLBACK;
+
+	/* memory_lock keeps revocation from racing admission and PTE insertion. */
+	if (!vfio_pci_gmem_access_allowed(vdev,
+				(u64)vmf->pgoff << PAGE_SHIFT, PAGE_SIZE))
 		return VM_FAULT_SIGBUS;
 
 	if (!order)
@@ -1842,7 +1849,8 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	void __iomem *bar_io;
 
 	guard(rwsem_read)(&vdev->memory_lock);
-	if (vdev->gmem)
+
+	if (!vfio_pci_gmem_mmap_allowed(vdev))
 		return -EBUSY;
 
 	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);

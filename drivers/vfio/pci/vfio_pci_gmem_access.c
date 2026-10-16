@@ -2,6 +2,7 @@
 /* Shared/private access and guest revocation are controlled by guest_memfd. */
 #include <linux/guest_memfd.h>
 #include <linux/iommufd.h>
+#include <linux/kvm.h>
 #include <linux/vfio_pci_core.h>
 
 #include "vfio_pci_gmem.h"
@@ -24,6 +25,36 @@ void vfio_pci_gmem_invalidate(struct vfio_pci_core_device *vdev)
 	lockdep_assert_held_write(&vdev->memory_lock);
 	if (ctx && !ctx->callbacks_detached)
 		ctx->gmem->invalidate(ctx->gmem);
+}
+
+/**
+ * vfio_gmem_invalidate_mmio() - revoke VFIO and shared guest BAR mappings
+ * @ctx: attached provider context
+ *
+ * Drain VFIO faults and host I/O, then remove existing BAR PTEs before
+ * delegation or teardown. The BAR zap also invalidates shared guest mappings
+ * while core callbacks remain attached. During private conversion the inode
+ * invalidate lock excludes new access through the host_accessible() check.
+ *
+ * Caller holds the vDEVICE MMIO mutex, except during attachment before the
+ * vDEVICE is assigned. No private conversion can start at that point.
+ */
+void vfio_gmem_invalidate_mmio(struct vfio_pci_gmem *ctx)
+{
+	if (ctx->ivdev)
+		lockdep_assert_held(&ctx->ivdev->mmio_lock);
+
+	vfio_pci_zap_and_down_write_memory_lock(ctx->vdev);
+	up_write(&ctx->vdev->memory_lock);
+}
+
+/* Serialize the creation flag check with attachment under memory_lock. */
+bool vfio_pci_gmem_mmap_allowed(struct vfio_pci_core_device *vdev)
+{
+	struct vfio_pci_gmem *ctx = vdev->gmem;
+
+	lockdep_assert_held(&vdev->memory_lock);
+	return !ctx || (ctx->gmem->flags & GUEST_MEMFD_FLAG_MMAP);
 }
 
 /**

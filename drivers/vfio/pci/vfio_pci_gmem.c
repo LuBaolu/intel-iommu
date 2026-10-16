@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/guest_memfd.h>
 #include <linux/iommufd.h>
+#include <linux/kvm.h>
 #include <linux/overflow.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
@@ -88,8 +89,9 @@ static bool vfio_gmem_has_private_mmio(void *data)
  *
  * Require an opened IOMMUFD-backed file and exclude another provider and
  * dma-buf exports. Pin the source file and the existing vDEVICE after its
- * backend validates the VM. VFIO BAR VMAs and provider attachment are mutually
- * exclusive for the entire provider lifetime.
+ * backend validates the VM. Without MMAP, exclude BAR VMAs for the provider
+ * lifetime. With MMAP, revoke existing BAR mappings before attachment
+ * completes; subsequent faults check guest_memfd attributes.
  *
  * Return: Provider context on success, or an ERR_PTR() on failure.
  */
@@ -119,18 +121,28 @@ static void *vfio_gmem_attach(struct file *file, struct guest_memfd *gdev)
 	down_write(&vdev->memory_lock);
 	/*
 	 * Allow only one guest_memfd provider per device. Existing dma-buf
-	 * exports bypass guest_memfd access checks. A BAR VMA can fault even
-	 * if it has never installed a PTE. Exclude both under memory_lock,
-	 * paired with mmap admission and dma-buf export.
+	 * exports bypass guest_memfd access checks and cannot be revoked by
+	 * private conversion. BAR VMAs require MMAP: attachment revokes their
+	 * PTEs and subsequent faults check the provider's range attributes.
 	 */
-	if (vdev->gmem || atomic_read(&vdev->mmap_count) ||
-	    !list_empty(&vdev->dmabufs)) {
+	if (vdev->gmem || !list_empty(&vdev->dmabufs)) {
 		up_write(&vdev->memory_lock);
 		ret = -EBUSY;
 		goto fail;
 	}
+
+	/* Without MMAP, exclude unfaulted and inherited BAR VMAs too. */
+	if (!(gdev->flags & GUEST_MEMFD_FLAG_MMAP) &&
+	    atomic_read(&vdev->mmap_count)) {
+		up_write(&vdev->memory_lock);
+		ret = -EBUSY;
+		goto fail;
+	}
+
 	vdev->gmem = ctx;
 	up_write(&vdev->memory_lock);
+	/* Faults deny access until the vDEVICE and guest_memfd file are ready. */
+	vfio_gmem_invalidate_mmio(ctx);
 	ivdev = iommufd_device_attach_mmio_provider(vdev->vdev.iommufd_device,
 						    gdev->kvm, ctx,
 						    vfio_gmem_has_private_mmio,
@@ -238,8 +250,8 @@ static int vfio_gmem_get_pfn(void *data, u64 offset, unsigned long *pfn)
  * @context: attached provider context
  * @req: protected private request, or NULL for shared cleanup
  *
- * Check the virtual device ID before private mapping. The core has already
- * invalidated shared guest mappings; VFIO userspace mappings are excluded.
+ * Check the virtual device ID and revoke VFIO userspace mappings before
+ * private mapping. The core has already invalidated shared guest mappings.
  * Keep that mutex held across architecture cleanup and attribute publication.
  *
  * Called with the inode invalidate lock held. On success,
@@ -262,15 +274,14 @@ static int vfio_gmem_prepare_conversion(void *context,
 	}
 	if (req) {
 		/*
-		 * VFIO BAR read/write and ioeventfd accesses hold memory_lock for
-		 * reading through the MMIO operation. Wait for accesses that passed
-		 * the shared-range check before conversion took the inode invalidate
-		 * lock. New accesses to the attached range are denied because
+		 * VFIO faults, BAR read/write and ioeventfd accesses hold memory_lock
+		 * for reading through PTE insertion or the MMIO operation. Drain
+		 * admitted accesses and revoke existing PTEs before delegation.
+		 * New accesses to the attached range are denied because
 		 * host_accessible() cannot acquire that lock for reading with
 		 * filemap_invalidate_trylock_shared().
 		 */
-		down_write(&ctx->vdev->memory_lock);
-		up_write(&ctx->vdev->memory_lock);
+		vfio_gmem_invalidate_mmio(ctx);
 	}
 	return 0; /* Keep mmio_lock held until finish_conversion(). */
 }
@@ -299,8 +310,8 @@ static void vfio_gmem_finish_conversion(void *context,
  * vfio_gmem_detach() - stop invalidation callbacks before core teardown
  * @data: attached provider context
  *
- * Mark the provider detached under the VFIO memory lock. VFIO userspace
- * mappings remain excluded until release clears the provider association.
+ * Mark the provider detached under the VFIO memory lock and revoke BAR
+ * translations. Faults remain blocked until release clears the association.
  */
 static void vfio_gmem_detach(void *data)
 {
@@ -309,6 +320,7 @@ static void vfio_gmem_detach(void *data)
 	guard(iommufd_vdevice_mmio)(ctx->ivdev);
 	scoped_guard(rwsem_write, &ctx->vdev->memory_lock)
 		ctx->callbacks_detached = true;
+	vfio_gmem_invalidate_mmio(ctx);
 }
 
 /**

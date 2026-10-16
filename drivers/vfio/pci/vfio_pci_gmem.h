@@ -21,4 +21,6 @@ struct vfio_pci_gmem {
 	bool callbacks_detached;
 };
 
+void vfio_gmem_invalidate_mmio(struct vfio_pci_gmem *ctx);
+
 #endif /* VFIO_PCI_GMEM_H */
