@@ -1,6 +1,8 @@
 config TDX_HOST_SERVICES
 	tristate
 	depends on INTEL_TDX_HOST
+	depends on PCI
 	select FW_LOADER
 	select FW_UPLOAD
+	select PCI_TSM
 	default m
