@@ -142,6 +142,14 @@ int tdx_topup_pamt_cache(struct tdx_pamt_cache *cache, unsigned long npages);
 int tdx_pamt_get(kvm_pfn_t pfn, struct tdx_pamt_cache *cache);
 void tdx_pamt_put(kvm_pfn_t pfn);
 
+static inline bool tdx_supports_tdisp(const struct tdx_sys_info *sysinfo)
+{
+	if (!(sysinfo->features.tdx_features0 & TDX_FEATURES0_TDXCONNECT))
+		return false;
+
+	return false; /* To be enabled when kernel is ready */
+}
+
 int tdx_guest_keyid_alloc(void);
 u32 tdx_get_nr_guest_keyids(void);
 void tdx_guest_keyid_free(unsigned int keyid);
