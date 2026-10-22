@@ -162,6 +162,17 @@ struct tdx_td {
 	int tdcx_nr_pages;
 };
 
+#define TDX_IOMMU_MT_IQ_NR	2
+#define TDX_IOMMU_MT_MAX_PAGES	(PAGE_SIZE / sizeof(u64) - TDX_IOMMU_MT_IQ_NR)
+
+/* IOMMU_MT parameter page for TDH.IOMMU.SETUP (ABI spec Table 3.35). */
+struct tdx_iommu_mt_param {
+	u64 iq[TDX_IOMMU_MT_IQ_NR];	/* HPA | number of 4K pages */
+	u64 mt[TDX_IOMMU_MT_MAX_PAGES];	/* HPA of each metadata page */
+};
+
+static_assert(sizeof(struct tdx_iommu_mt_param) == PAGE_SIZE);
+
 struct tdx_vp {
 	/* TDVP root page */
 	struct page *tdvpr_page;
@@ -202,6 +213,9 @@ u64 tdh_mem_page_remove(struct tdx_td *td, u64 gpa, enum pg_level level, u64 *ex
 u64 tdh_phymem_cache_wb(bool resume);
 u64 tdh_phymem_page_wbinvd_tdr(struct tdx_td *td);
 u64 tdh_phymem_page_wbinvd_hkid(u64 hkid, kvm_pfn_t pfn);
+u64 tdh_iommu_setup(u64 reg_base, struct tdx_iommu_mt_param *param,
+		    u64 *tdx_iommu_id);
+u64 tdh_iommu_clear(u64 tdx_iommu_id);
 #else
 static inline void tdx_init(void) { }
 static inline u32 tdx_get_nr_guest_keyids(void) { return 0; }

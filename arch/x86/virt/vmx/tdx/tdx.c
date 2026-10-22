@@ -2567,3 +2567,56 @@ void tdx_sys_disable(void)
 	if (ret && (ret & TDX_SW_ERROR) != TDX_SW_ERROR)
 		pr_err("TDH.SYS.DISABLE failed: 0x%016llx\n", ret);
 }
+
+/* No cache flush is needed; hardware keeps caches coherent across KeyIDs. */
+u64 tdh_iommu_setup(u64 reg_base, struct tdx_iommu_mt_param *param,
+		    u64 *tdx_iommu_id)
+{
+	struct tdx_module_args args = {
+		.rcx = reg_base,
+		.rdx = __pa(param),
+	};
+	u64 ret;
+
+	/*
+	 * Retry only on TDX_INTERRUPTED_RESUMABLE:
+	 *
+	 *  - TDX_INTERRUPTED_RESUMABLE guarantees forward progress between
+	 *    calls.
+	 *  - On TDX_INTERRUPTED_RESUMABLE, all registers except RAX remain
+	 *    unchanged.
+	 *
+	 * The ABI spec also allows retrying on TDX_OPERAND_BUSY, but that
+	 * status doesn't guarantee forward progress, so retrying could spin
+	 * forever. The host serializes all TDH.IOMMU.SETUP and
+	 * TDH.IOMMU.CLEAR calls for an IOMMU, so the TDX module should never
+	 * report the operand as busy.
+	 */
+	do {
+		ret = seamcall_ret(TDH_IOMMU_SETUP, &args);
+	} while (ret == TDX_INTERRUPTED_RESUMABLE);
+
+	*tdx_iommu_id = args.rcx;
+
+	return ret;
+}
+EXPORT_SYMBOL_FOR_MODULES(tdh_iommu_setup, "tdx-host");
+
+u64 tdh_iommu_clear(u64 tdx_iommu_id)
+{
+	struct tdx_module_args args = {
+		.rcx = tdx_iommu_id,
+	};
+	u64 ret;
+
+	/*
+	 * Don't retry on TDX_OPERAND_BUSY. See the comment in
+	 * tdh_iommu_setup().
+	 */
+	do {
+		ret = seamcall(TDH_IOMMU_CLEAR, &args);
+	} while (ret == TDX_INTERRUPTED_RESUMABLE);
+
+	return ret;
+}
+EXPORT_SYMBOL_FOR_MODULES(tdh_iommu_clear, "tdx-host");
