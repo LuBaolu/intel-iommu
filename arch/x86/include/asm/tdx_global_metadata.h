@@ -51,12 +51,17 @@ struct tdx_sys_info_ext {
 	u32 required_pages;
 };
 
+struct tdx_sys_info_connect {
+	u16 iommu_mt_page_count;
+};
+
 struct tdx_sys_info {
 	struct tdx_sys_info_version version;
 	struct tdx_sys_info_features features;
 	struct tdx_sys_info_tdmr tdmr;
 	struct tdx_sys_info_td_ctrl td_ctrl;
 	struct tdx_sys_info_td_conf td_conf;
+	struct tdx_sys_info_connect tdx_connect;
 };
 
 #endif
