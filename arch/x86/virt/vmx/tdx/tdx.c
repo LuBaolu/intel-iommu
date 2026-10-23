@@ -2426,7 +2426,7 @@ out_free:
 
 	return ret;
 }
-EXPORT_SYMBOL_FOR_KVM(tdx_pamt_get);
+EXPORT_SYMBOL_FOR_MODULES(tdx_pamt_get, "kvm-intel,tdx-host");
 
 /* Drop DPAMT refcount for the given pfn and free DPAMT backing if needed. */
 void tdx_pamt_put(kvm_pfn_t pfn)
@@ -2470,7 +2470,7 @@ void tdx_pamt_put(kvm_pfn_t pfn)
 out_unlock:
 	spin_unlock(&dpamt_lock);
 }
-EXPORT_SYMBOL_FOR_KVM(tdx_pamt_put);
+EXPORT_SYMBOL_FOR_MODULES(tdx_pamt_put, "kvm-intel,tdx-host");
 
 void tdx_free_pamt_cache(struct tdx_pamt_cache *cache)
 {
