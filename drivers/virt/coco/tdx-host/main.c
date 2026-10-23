@@ -18,6 +18,8 @@
 #include <asm/tdx.h>
 #include <asm/tdx_global_metadata.h>
 
+#include "private.h"
+
 static const struct x86_cpu_id tdx_host_ids[] = {
 	X86_MATCH_FEATURE(X86_FEATURE_TDX_HOST_PLATFORM, NULL),
 	{}
@@ -42,11 +44,20 @@ static struct tdx_tsm_link *to_tdx_tsm_link(struct pci_tsm *tsm)
 
 static int tdx_tsm_link_connect(struct pci_dev *pdev)
 {
+	int ret;
+
+	ret = tdx_iommu_get(pdev);
+	if (ret)
+		return ret;
+
+	/* TDISP connect is not implemented yet. */
+	tdx_iommu_put(pdev);
 	return -ENXIO;
 }
 
 static void tdx_tsm_link_disconnect(struct pci_dev *pdev)
 {
+	tdx_iommu_put(pdev);
 }
 
 static struct pci_tsm *tdx_tsm_link_pf0_probe(struct tsm_dev *tsm_dev,
