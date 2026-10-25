@@ -6,3 +6,8 @@ config TDX_HOST_SERVICES
 	select FW_UPLOAD
 	select PCI_TSM
 	default m
+
+config TDX_CONNECT
+	def_bool y
+	depends on TDX_HOST_SERVICES
+	depends on INTEL_IOMMU
