@@ -202,6 +202,55 @@ static struct tdx_iommu *tdx_iommu_find(u64 reg_base_addr)
 	return NULL;
 }
 
+/* Number of 4K pages backing IOMMU_MT entry @i. */
+static unsigned int mt_entry_nr_pages(unsigned int i)
+{
+	return i < IQ_BUFFERS_NUM ? IQ_BUFFER_SIZE >> PAGE_SHIFT : 1;
+}
+
+/*
+ * Drop the PAMT backing of the first @nr 4K pages handed to the TDX
+ * module, in the order mt_pamt_get() took it. Pass UINT_MAX for all.
+ */
+static void mt_pamt_put(struct tdx_iommu_pages *mt, unsigned int nr)
+{
+	unsigned int i, j;
+
+	for (i = 0; i < mt->nr_entries && nr; i++) {
+		unsigned long pfn = PHYS_PFN(__pa(mt->pages[i]));
+
+		for (j = 0; j < mt_entry_nr_pages(i) && nr; j++, nr--)
+			tdx_pamt_put(pfn + j);
+	}
+}
+
+/*
+ * With Dynamic PAMT, every 4K page handed to the TDX module needs PAMT
+ * backing first. This covers the IQ buffers and the metadata pages, not
+ * the root page, which only carries the list of pages into the
+ * SEAMCALL. tdx_pamt_get() is a no-op without Dynamic PAMT.
+ */
+static int mt_pamt_get(struct tdx_iommu_pages *mt)
+{
+	unsigned int i, j, nr = 0;
+	int ret;
+
+	for (i = 0; i < mt->nr_entries; i++) {
+		unsigned long pfn = PHYS_PFN(__pa(mt->pages[i]));
+
+		for (j = 0; j < mt_entry_nr_pages(i); j++) {
+			ret = tdx_pamt_get(pfn + j, NULL);
+			if (ret) {
+				mt_pamt_put(mt, nr);
+				return ret;
+			}
+			nr++;
+		}
+	}
+
+	return 0;
+}
+
 /* Allocate the IOMMU_MT pages and issue TDH.IOMMU.SETUP. */
 static int tdx_iommu_setup(struct pci_dev *pdev, struct tdx_iommu *tiommu)
 {
@@ -216,16 +265,22 @@ static int tdx_iommu_setup(struct pci_dev *pdev, struct tdx_iommu *tiommu)
 	if (!mt)
 		return -ENOMEM;
 
-	ret = dmar_tdxc_init_prepare(pdev, params);
+	/* Before init_prepare(), so nothing allocates with ECMD blocked. */
+	ret = mt_pamt_get(mt);
 	if (ret)
 		return ret;
+
+	ret = dmar_tdxc_init_prepare(pdev, params);
+	if (ret)
+		goto err_pamt_put;
 
 	r = tdh_iommu_setup(params->reg_base_addr, mt->root, &tdx_iommu_id);
 	dmar_tdxc_init_done(pdev, params, !r);
 	if (r) {
 		pr_err("TDH.IOMMU.SETUP failed, regbase 0x%llx status 0x%llx\n",
 		       params->reg_base_addr, r);
-		return -EIO;
+		ret = -EIO;
+		goto err_pamt_put;
 	}
 
 	tiommu->tdx_iommu_id = tdx_iommu_id;
@@ -234,6 +289,10 @@ static int tdx_iommu_setup(struct pci_dev *pdev, struct tdx_iommu *tiommu)
 	pr_info("Trusted DMA initialized, regbase 0x%llx\n", params->reg_base_addr);
 
 	return 0;
+
+err_pamt_put:
+	mt_pamt_put(mt, UINT_MAX);
+	return ret;
 }
 
 /* Issue TDH.IOMMU.CLEAR and release what TDH.IOMMU.SETUP took. */
@@ -245,10 +304,12 @@ static int tdx_iommu_clear(struct pci_dev *pdev, struct tdx_iommu *tiommu)
 	if (r) {
 		pr_err("TDH.IOMMU.CLEAR failed, regbase 0x%llx tdx_iommu_id 0x%llx status 0x%llx\n",
 		       tiommu->params.reg_base_addr, tiommu->tdx_iommu_id, r);
+		/* The pages and their PAMT backing stay with the TDX module. */
 		return -EIO;
 	}
 
 	dmar_tdxc_release(pdev, &tiommu->params);
+	mt_pamt_put(tiommu->mt_pages, UINT_MAX);
 	free_mt_pages(tiommu->mt_pages);
 	tiommu->mt_pages = NULL;
 
