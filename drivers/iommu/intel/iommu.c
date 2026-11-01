@@ -2897,8 +2897,8 @@ static int blocking_domain_attach_dev(struct iommu_domain *domain,
 				      struct device *dev,
 				      struct iommu_domain *old)
 {
-	iopf_for_domain_remove(old, dev);
 	device_block_translation(dev);
+	iopf_for_domain_remove(old, dev);
 	return 0;
 }
 
