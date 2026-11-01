@@ -179,21 +179,6 @@ retry:
  * Interfaces for PASID table entry manipulation:
  */
 static void
-intel_pasid_clear_entry(struct device *dev, u32 pasid, bool fault_ignore)
-{
-	struct pasid_entry *pe;
-
-	pe = intel_pasid_get_entry(dev, pasid);
-	if (WARN_ON(!pe))
-		return;
-
-	if (fault_ignore && pasid_pte_is_present(pe))
-		pasid_clear_entry_with_fpd(pe);
-	else
-		pasid_clear_entry(pe);
-}
-
-static void
 pasid_cache_invalidation_with_pasid(struct intel_iommu *iommu,
 				    u16 did, u32 pasid)
 {
@@ -253,7 +238,6 @@ void intel_pasid_tear_down_entry(struct intel_iommu *iommu, struct device *dev,
 
 	if (!pasid_pte_is_present(pte)) {
 		if (!pasid_pte_is_fault_disabled(pte)) {
-			WARN_ON(READ_ONCE(pte->val[0]) != 0);
 			spin_unlock(&iommu->lock);
 			return;
 		}
@@ -266,6 +250,8 @@ void intel_pasid_tear_down_entry(struct intel_iommu *iommu, struct device *dev,
 		 */
 		pasid_clear_entry(pte);
 		spin_unlock(&iommu->lock);
+		if (!ecap_coherent(iommu->ecap))
+			clflush_cache_range(pte, sizeof(*pte));
 		intel_iommu_drain_pasid_prq(dev, pasid);
 
 		return;
@@ -273,7 +259,10 @@ void intel_pasid_tear_down_entry(struct intel_iommu *iommu, struct device *dev,
 
 	did = pasid_get_domain_id(pte);
 	pgtt = pasid_pte_get_pgtt(pte);
-	pasid_clear_present(pte);
+	if (fault_ignore)
+		pasid_clear_present_set_fpd(pte);
+	else
+		pasid_clear_present(pte);
 	spin_unlock(&iommu->lock);
 
 	if (!ecap_coherent(iommu->ecap))
@@ -287,7 +276,10 @@ void intel_pasid_tear_down_entry(struct intel_iommu *iommu, struct device *dev,
 		iommu->flush.flush_iotlb(iommu, did, 0, 0, DMA_TLB_DSI_FLUSH);
 
 	devtlb_invalidation_with_pasid(iommu, dev, pasid);
-	intel_pasid_clear_entry(dev, pasid, fault_ignore);
+	if (fault_ignore)
+		pasid_clear_entry_with_fpd(pte);
+	else
+		pasid_clear_entry(pte);
 	if (!ecap_coherent(iommu->ecap))
 		clflush_cache_range(pte, sizeof(*pte));
 

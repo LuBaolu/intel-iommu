@@ -252,6 +252,17 @@ static inline void pasid_clear_present(struct pasid_entry *pe)
 }
 
 /*
+ * Clear the Present bit and set the FPD bit in a single write, so that
+ * hardware never sees the entry non-present without FPD.
+ */
+static inline void pasid_clear_present_set_fpd(struct pasid_entry *pe)
+{
+	pasid_set_bits(&pe->val[0], PASID_PTE_PRESENT | PASID_PTE_FPD,
+		       PASID_PTE_FPD);
+	dma_wmb();
+}
+
+/*
  * Setup Page Walk Snoop bit (Bit 87) of a scalable mode PASID
  * entry.
  */
