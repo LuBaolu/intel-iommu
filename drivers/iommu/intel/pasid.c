@@ -237,7 +237,7 @@ void intel_pasid_tear_down_entry(struct intel_iommu *iommu, struct device *dev,
 	}
 
 	if (!pasid_pte_is_present(pte)) {
-		if (!pasid_pte_is_fault_disabled(pte)) {
+		if (!pasid_pte_is_fault_disabled(pte) || fault_ignore) {
 			spin_unlock(&iommu->lock);
 			return;
 		}

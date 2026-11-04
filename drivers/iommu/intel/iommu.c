@@ -3699,6 +3699,16 @@ static int blocking_domain_set_dev_pasid(struct iommu_domain *domain,
 {
 	struct device_domain_info *info = dev_iommu_priv_get(dev);
 
+	if (old && old->type == IOMMU_DOMAIN_SVA) {
+		struct dmar_domain *dmar_domain = to_dmar_domain(old);
+		unsigned long flags;
+
+		/* intel_mm_release() must not return before invalidation. */
+		spin_lock_irqsave(&dmar_domain->lock, flags);
+		intel_pasid_tear_down_entry(info->iommu, dev, pasid, true);
+		spin_unlock_irqrestore(&dmar_domain->lock, flags);
+	}
+
 	intel_pasid_tear_down_entry(info->iommu, dev, pasid, false);
 	iopf_for_domain_remove(old, dev);
 	domain_remove_dev_pasid(old, dev, pasid);
