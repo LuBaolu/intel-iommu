@@ -690,7 +690,10 @@ struct intel_iommu {
 	u64		ecmdcap[DMA_MAX_NUM_ECMDCAP];
 	u32		gcmd; /* Holds TE, EAFL. Don't need SRTP, SFL, WBF */
 	raw_spinlock_t	register_lock; /* protect register handling */
-	/* Acquired for the TDX module. Protected by register_lock. */
+	/*
+	 * GCMD and ECMD writes are rejected while the TDX module owns this
+	 * IOMMU. Protected by register_lock.
+	 */
 	bool		tdxc_acquired;
 	int		seq_id;	/* sequence id of the iommu */
 	int		agaw; /* agaw of this iommu */
@@ -1354,6 +1357,9 @@ static inline bool intel_domain_is_ss_paging(struct dmar_domain *domain)
 }
 
 extern int intel_iommu_sm;
+extern int rwbf_quirk;
+
+#define rwbf_required(iommu)	(rwbf_quirk || cap_rwbf((iommu)->cap))
 int iommu_calculate_agaw(struct intel_iommu *iommu);
 int iommu_calculate_max_sagaw(struct intel_iommu *iommu);
 int ecmd_submit_sync(struct intel_iommu *iommu, u8 ecmd, u64 oa, u64 ob);

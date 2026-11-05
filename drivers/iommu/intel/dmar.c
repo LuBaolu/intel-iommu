@@ -1731,6 +1731,9 @@ void dmar_disable_qi(struct intel_iommu *iommu)
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
 
+	if (WARN_ON_ONCE(iommu->tdxc_acquired))
+		goto end;
+
 	sts =  readl(iommu->reg + DMAR_GSTS_REG);
 	if (!(sts & DMA_GSTS_QIES))
 		goto end;
@@ -1774,6 +1777,9 @@ static void __dmar_enable_qi(struct intel_iommu *iommu)
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
 
+	if (WARN_ON_ONCE(iommu->tdxc_acquired))
+		goto out;
+
 	/* write zero to the tail reg */
 	writel(0, iommu->reg + DMAR_IQT_REG);
 
@@ -1785,6 +1791,7 @@ static void __dmar_enable_qi(struct intel_iommu *iommu)
 	/* Make sure hardware complete it */
 	IOMMU_WAIT_OP(iommu, DMAR_GSTS_REG, readl, (sts & DMA_GSTS_QIES), sts);
 
+out:
 	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
 }
 
@@ -2586,10 +2593,29 @@ static void dmar_tdxc_unreserve_did(struct intel_iommu *iommu)
 	iommu->max_domain_id = cap_ndoms(iommu->cap);
 }
 
-static void dmar_tdxc_set_acquired(struct intel_iommu *iommu, bool acquired)
+static int dmar_tdxc_block_regs(struct intel_iommu *iommu)
 {
-	guard(raw_spinlock_irqsave)(&iommu->register_lock);
-	iommu->tdxc_acquired = acquired;
+	unsigned long flags;
+	int ret = 0;
+
+	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	if (cap_ecmds(iommu->cap) &&
+	    (readq(iommu->reg + DMAR_ECRSP_REG) & DMA_ECMD_ECRSP_IP))
+		ret = -EBUSY;
+	else
+		iommu->tdxc_acquired = true;
+	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
+
+	return ret;
+}
+
+static void dmar_tdxc_unblock_regs(struct intel_iommu *iommu)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	iommu->tdxc_acquired = false;
+	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
 }
 
 static struct dmar_drhd_unit *dmar_tdxc_find_drhd(struct pci_dev *pdev)
@@ -2670,11 +2696,19 @@ int dmar_tdxc_acquire(struct pci_dev *pdev,
 	if (!(iommu->gcmd & DMA_GCMD_TE) || !iommu->qi || !sm_supported(iommu))
 		return -EINVAL;
 
+	/* Write buffer flushing needs GCMD, which is blocked once acquired. */
+	if (rwbf_required(iommu))
+		return -EOPNOTSUPP;
+
 	ret = dmar_tdxc_reserve_did(iommu);
 	if (ret)
 		return ret;
 
-	dmar_tdxc_set_acquired(iommu, true);
+	ret = dmar_tdxc_block_regs(iommu);
+	if (ret) {
+		dmar_tdxc_unreserve_did(iommu);
+		return ret;
+	}
 
 	return 0;
 }
@@ -2700,7 +2734,7 @@ void dmar_tdxc_release(struct pci_dev *pdev,
 	if (WARN_ON(!drhd->iommu->tdxc_acquired))
 		return;
 
-	dmar_tdxc_set_acquired(drhd->iommu, false);
+	dmar_tdxc_unblock_regs(drhd->iommu);
 	dmar_tdxc_unreserve_did(drhd->iommu);
 }
 EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_release, "tdx-host");

@@ -46,9 +46,7 @@
 static void __init check_tylersburg_isoch(void);
 static int intel_iommu_set_dirty_tracking(struct iommu_domain *domain,
 					  bool enable);
-static int rwbf_quirk;
-
-#define rwbf_required(iommu)	(rwbf_quirk || cap_rwbf((iommu)->cap))
+int rwbf_quirk;
 
 /*
  * Skip forcing iommu on and avoid tboot-related kernel panics during
@@ -699,6 +697,10 @@ static void iommu_set_root_entry(struct intel_iommu *iommu)
 		addr |= DMA_RTADDR_SMT;
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flag);
+	if (WARN_ON_ONCE(iommu->tdxc_acquired)) {
+		raw_spin_unlock_irqrestore(&iommu->register_lock, flag);
+		return;
+	}
 	writeq(addr, iommu->reg + DMAR_RTADDR_REG);
 
 	writel(iommu->gcmd | DMA_GCMD_SRTP, iommu->reg + DMAR_GCMD_REG);
@@ -731,12 +733,15 @@ void iommu_flush_write_buffer(struct intel_iommu *iommu)
 		return;
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flag);
+	if (WARN_ON_ONCE(iommu->tdxc_acquired))
+		goto out;
 	writel(iommu->gcmd | DMA_GCMD_WBF, iommu->reg + DMAR_GCMD_REG);
 
 	/* Make sure hardware complete it */
 	IOMMU_WAIT_OP(iommu, DMAR_GSTS_REG,
 		      readl, (!(val & DMA_GSTS_WBFS)), val);
 
+out:
 	raw_spin_unlock_irqrestore(&iommu->register_lock, flag);
 }
 
@@ -956,6 +961,8 @@ static void iommu_enable_translation(struct intel_iommu *iommu)
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	if (WARN_ON_ONCE(iommu->tdxc_acquired))
+		goto out;
 	iommu->gcmd |= DMA_GCMD_TE;
 	writel(iommu->gcmd, iommu->reg + DMAR_GCMD_REG);
 
@@ -963,6 +970,7 @@ static void iommu_enable_translation(struct intel_iommu *iommu)
 	IOMMU_WAIT_OP(iommu, DMAR_GSTS_REG,
 		      readl, (sts & DMA_GSTS_TES), sts);
 
+out:
 	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
 }
 
@@ -976,6 +984,8 @@ static void iommu_disable_translation(struct intel_iommu *iommu)
 		return;
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flag);
+	if (WARN_ON_ONCE(iommu->tdxc_acquired))
+		goto out;
 	iommu->gcmd &= ~DMA_GCMD_TE;
 	writel(iommu->gcmd, iommu->reg + DMAR_GCMD_REG);
 
@@ -983,6 +993,7 @@ static void iommu_disable_translation(struct intel_iommu *iommu)
 	IOMMU_WAIT_OP(iommu, DMAR_GSTS_REG,
 		      readl, (!(sts & DMA_GSTS_TES)), sts);
 
+out:
 	raw_spin_unlock_irqrestore(&iommu->register_lock, flag);
 }
 
@@ -2512,6 +2523,12 @@ void intel_iommu_shutdown(void)
 
 		/* Disable PMRs explicitly here. */
 		iommu_disable_protect_mem_regions(iommu);
+
+		/*
+		 * Only reached via machine_shutdown(), after syscore_shutdown()
+		 * ran TDH.SYS.DISABLE and took the IOMMU out of Secure TDX Mode.
+		 */
+		iommu->tdxc_acquired = false;
 
 		/* Make sure the IOMMUs are switched off */
 		iommu_disable_translation(iommu);
@@ -4335,6 +4352,16 @@ int ecmd_submit_sync(struct intel_iommu *iommu, u8 ecmd, u64 oa, u64 ob)
 		return -ENODEV;
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+
+	/*
+	 * The TDX module owns this IOMMU. This may be called from atomic
+	 * context (e.g. perf pmu::start/stop), so don't sleep; just reject
+	 * the request.
+	 */
+	if (iommu->tdxc_acquired) {
+		ret = -EBUSY;
+		goto err;
+	}
 
 	res = readq(iommu->reg + DMAR_ECRSP_REG);
 	if (res & DMA_ECMD_ECRSP_IP) {

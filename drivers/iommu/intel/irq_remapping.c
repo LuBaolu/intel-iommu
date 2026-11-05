@@ -464,6 +464,10 @@ static void iommu_set_irq_remapping(struct intel_iommu *iommu, int mode)
 	addr = virt_to_phys((void *)iommu->ir_table->base);
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	if (WARN_ON_ONCE(iommu->tdxc_acquired)) {
+		raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
+		return;
+	}
 
 	writeq((addr) | IR_X2APIC_MODE(mode) | INTR_REMAP_TABLE_REG_SIZE,
 	       iommu->reg + DMAR_IRTA_REG);
@@ -489,6 +493,8 @@ static void iommu_enable_irq_remapping(struct intel_iommu *iommu)
 	u32 sts;
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+	if (WARN_ON_ONCE(iommu->tdxc_acquired))
+		goto out;
 
 	/* Enable interrupt-remapping */
 	iommu->gcmd |= DMA_GCMD_IRE;
@@ -514,6 +520,7 @@ static void iommu_enable_irq_remapping(struct intel_iommu *iommu)
 			"Compatibility-format IRQs enabled despite intr remapping;\n"
 			"you are vulnerable to IRQ injection.\n");
 
+out:
 	raw_spin_unlock_irqrestore(&iommu->register_lock, flags);
 }
 
@@ -657,6 +664,9 @@ static void iommu_disable_irq_remapping(struct intel_iommu *iommu)
 		qi_global_iec(iommu);
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
+
+	if (WARN_ON_ONCE(iommu->tdxc_acquired))
+		goto end;
 
 	sts = readl(iommu->reg + DMAR_GSTS_REG);
 	if (!(sts & DMA_GSTS_IRES))
