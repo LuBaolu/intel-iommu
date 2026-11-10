@@ -47,7 +47,9 @@ struct dmar_drhd_unit {
 	u8	ignored:1; 		/* ignore drhd		*/
 	u8	include_all:1;
 	u8	gfx_dedicated:1;	/* graphic dedicated	*/
-	struct mutex tdxc_lock;		/* serializes acquire/release */
+	struct mutex tdxc_lock;		/* serializes acquire/release/suspend */
+	struct notifier_block tdxc_pm_nb;
+	bool	tdxc_suspending;	/* protected by tdxc_lock */
 	struct intel_iommu *iommu;
 };
 

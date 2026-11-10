@@ -2041,6 +2041,7 @@ static struct syscore iommu_syscore = {
 static void __init init_iommu_pm_ops(void)
 {
 	register_syscore(&iommu_syscore);
+	dmar_tdxc_pm_init();
 }
 
 #else

@@ -1363,6 +1363,7 @@ extern int rwbf_quirk;
 int iommu_calculate_agaw(struct intel_iommu *iommu);
 int iommu_calculate_max_sagaw(struct intel_iommu *iommu);
 int ecmd_submit_sync(struct intel_iommu *iommu, u8 ecmd, u64 oa, u64 ob);
+void dmar_tdxc_pm_init(void);
 
 static inline bool ecmd_has_pmu_essential(struct intel_iommu *iommu)
 {

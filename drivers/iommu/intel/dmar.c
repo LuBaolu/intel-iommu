@@ -28,6 +28,7 @@
 #include <linux/iommu.h>
 #include <linux/numa.h>
 #include <linux/limits.h>
+#include <linux/suspend.h>
 #include <asm/irq_remapping.h>
 
 #include "iommu.h"
@@ -2683,6 +2684,9 @@ int dmar_tdxc_acquire(struct pci_dev *pdev,
 		return -EINVAL;
 
 	guard(mutex)(&drhd->tdxc_lock);
+	if (drhd->tdxc_suspending)
+		return -EBUSY;
+
 	/* Still set if TDH.IOMMU.CLEAR failed and tdx-host was reloaded. */
 	if (iommu->tdxc_acquired)
 		return -EBUSY;
@@ -2737,3 +2741,52 @@ void dmar_tdxc_release(struct pci_dev *pdev,
 	dmar_tdxc_unreserve_did(drhd->iommu);
 }
 EXPORT_SYMBOL_FOR_MODULES(dmar_tdxc_release, "tdx-host");
+
+/*
+ * TDX only fails S3 after syscore suspend/resume have run, and those
+ * would hit the blocked GCMD paths. Refuse the suspend up front instead.
+ */
+static int dmar_tdxc_pm_notify(struct notifier_block *nb,
+			       unsigned long action, void *data)
+{
+	struct dmar_drhd_unit *drhd =
+		container_of(nb, struct dmar_drhd_unit, tdxc_pm_nb);
+
+	guard(mutex)(&drhd->tdxc_lock);
+
+	switch (action) {
+	case PM_SUSPEND_PREPARE:
+		if (drhd->iommu->tdxc_acquired)
+			return notifier_from_errno(-EBUSY);
+		drhd->tdxc_suspending = true;
+		break;
+	case PM_POST_SUSPEND:
+		drhd->tdxc_suspending = false;
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
+void __init dmar_tdxc_pm_init(void)
+{
+	struct dmar_drhd_unit *drhd;
+	struct intel_iommu *iommu;
+
+	down_read(&dmar_global_lock);
+	for_each_active_iommu(iommu, drhd) {
+		if (!ecap_tdxcs(iommu->ecap))
+			continue;
+
+		drhd->tdxc_pm_nb.notifier_call = dmar_tdxc_pm_notify;
+		/*
+		 * CPU hotplug takes dmar_global_lock under the PM notifier chain
+		 * lock. Drop it to avoid a lock order splat; TDXCS units are never
+		 * hot-removed, so @drhd stays valid.
+		 */
+		up_read(&dmar_global_lock);
+		register_pm_notifier(&drhd->tdxc_pm_nb);
+		down_read(&dmar_global_lock);
+	}
+	up_read(&dmar_global_lock);
+}
