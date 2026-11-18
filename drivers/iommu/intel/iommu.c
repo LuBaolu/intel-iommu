@@ -3393,6 +3393,7 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 
 	info->dev = dev;
 	info->iommu = iommu;
+	/* An empty node marks the device as not in the rbtree. */
 	RB_CLEAR_NODE(&info->node);
 	if (dev_is_pci(dev)) {
 		if (ecap_dev_iotlb_support(iommu->ecap) &&
@@ -3508,8 +3509,7 @@ static void intel_iommu_release_device(struct device *dev)
 	}
 
 	mutex_lock(&iommu->iopf_lock);
-	if (dev_is_pci(dev) && pci_ats_supported(to_pci_dev(dev)))
-		device_rbtree_remove(info);
+	device_rbtree_remove(info);
 	mutex_unlock(&iommu->iopf_lock);
 
 	if (sm_supported(iommu) && !dev_is_real_dma_subdevice(dev) &&
